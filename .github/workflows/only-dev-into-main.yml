@@ -1,0 +1,18 @@
+# main only takes PRs from dev. GitHub branch protection can't restrict the source
+# branch, so this check fails any PR into main whose head isn't dev, and branch
+# protection marks it as a required status check.
+name: only-dev-into-main
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  only-dev-into-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Source branch must be dev
+        run: |
+          echo "PR head branch: ${{ github.head_ref }}"
+          if [ "${{ github.head_ref }}" != "dev" ]; then
+            echo "::error::PRs into main must come from dev (got '${{ github.head_ref }}')."
+            exit 1
+          fi
