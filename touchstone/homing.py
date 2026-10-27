@@ -101,9 +101,11 @@ class Homer:
         self.phase = "preflight"
         self.goal: int | None = None
         self.limits = (calibration[joint]["range_min"], calibration[joint]["range_max"])
+        self.lead_max = config.LEAD_MAX_TICKS     # scaled by 16/P in preflight
         self._last_pos: int | None = None
         self._cycle = 0
         self._next_tick = 0.0
+        self._dir = 0                             # direction of the current motion, 0 = holding
 
     # ================================================================== public
     def run(self, ends: tuple[str, ...] = ("min", "max")) -> JointResult:
@@ -155,6 +157,13 @@ class Homer:
                 problems.append(f"{m}: torque is ON. Start with the arm resting and torque off on every joint")
         if self.bus.read("Operating_Mode", j) != 0:
             problems.append(f"{j}: not in position mode")
+        p_gain = self.bus.read("P_Coefficient", j)
+        if not 0 < p_gain <= config.P_MAX:
+            problems.append(f"{j}: P_Coefficient {p_gain}, expected 1..{config.P_MAX} (lerobot sets 16)")
+        else:
+            # only ever scaled DOWN: a softer servo (P<16) pushes less per tick anyway
+            self.lead_max = max(config.STALL_MIN_LEAD_TICKS + 4,
+                                min(config.LEAD_MAX_TICKS, round(config.LEAD_MAX_TICKS * config.P_REFERENCE / p_gain)))
         eeprom = {k: self.bus.read(r, j) for k, r in
                   (("homing_offset", "Homing_Offset"), ("range_min", "Min_Position_Limit"),
                    ("range_max", "Max_Position_Limit"))}
@@ -169,7 +178,7 @@ class Homer:
         if problems:
             raise Refused("preflight failed, nothing was written:\n  " + "\n  ".join(problems))
         self._event(f"preflight ok: {j} at {pos}, range {lo}..{hi}, torque limit {self.torque_limit}/1000, "
-                    f"widen {self.widen}, tolerance {self.tolerance}")
+                    f"widen {self.widen}, tolerance {self.tolerance}, lead cap {self.lead_max}")
 
     # ================================================================== setup / restore
     def _snapshot(self) -> dict:
@@ -205,12 +214,19 @@ class Homer:
         self.goal = b.read("Present_Position", j)
         b.write("Goal_Position", j, self.goal)    # no jump when torque comes on
         b.torque_on(j)
+        # Trust nothing: the force cap is only real if the servo still holds these after the
+        # torque-enable edge. Checked before the joint is asked to do anything.
+        want = {"Torque_Limit": self.torque_limit, "Acceleration": config.ACCELERATION_CAP,
+                "Goal_Velocity": config.GOAL_VELOCITY_CAP}
+        got = {r: b.read(r, j) for r in want}
+        if got != want:
+            raise Aborted(f"after torque on, {j} reads {got}, expected {want}: the caps are not in effect")
         self._next_tick = b.now()
         self._hold_check()
 
     def _hold_check(self) -> None:
         """At the homing torque limit, can the joint even hold itself where it lies?"""
-        self.phase = "hold-check"
+        self.phase, self._dir = "hold-check", 0
         s0 = self._sample()
         s, recent = s0, deque([(s0.t, s0.pos)])
         while True:
@@ -316,7 +332,7 @@ class Homer:
         return r
 
     def _approach(self, d: int, step: int, search: int, phase: str) -> Touch:
-        self.phase = phase
+        self.phase, self._dir = phase, d
         s = self._sample()
         # keep the current goal: resetting it to pos would drop a gravity-loaded joint's preload
         t0, hist, peak, best = s.t, deque([(s.t, s.pos)]), 0, s.pos
@@ -350,6 +366,7 @@ class Homer:
         target = min(max(target, lo), hi)
         s = self._sample()
         d = 1 if target >= s.pos else -1
+        self._dir = d
         t0, hist, best = s.t, deque([(s.t, s.pos)]), s.pos
         timeout = abs(target - s.pos) / (step * config.CYCLE_HZ) + config.APPROACH_TIMEOUT_EXTRA_S
         while True:
@@ -381,8 +398,8 @@ class Homer:
 
     def _next_goal(self, pos: int, d: int, step: int, limit: int) -> int:
         if d > 0:
-            return min(self.goal + step, pos + config.LEAD_MAX_TICKS, limit)
-        return max(self.goal - step, pos - config.LEAD_MAX_TICKS, limit)
+            return min(self.goal + step, pos + self.lead_max, limit)
+        return max(self.goal - step, pos - self.lead_max, limit)
 
     # ================================================================== sensing
     def _wait_cycle(self) -> None:
@@ -404,6 +421,12 @@ class Homer:
         if self._last_pos is not None and abs(s.pos - self._last_pos) > config.JUMP_ABORT_TICKS:
             raise Aborted(f"{j} jumped {self._last_pos} -> {s.pos} in one cycle (encoder wrap or glitch)")
         self._last_pos = s.pos
+        if self.goal is not None and abs(s.pos - self.goal) > config.OVERRUN_TICKS + self.lead_max \
+                and self.phase not in ("setup", "restore"):
+            raise Aborted(f"{j} at {s.pos}, {s.pos - self.goal:+d} from its goal {self.goal}: not under control")
+        if self.goal is not None and self.phase not in ("setup", "restore") and self._ahead(s.pos):
+            raise Aborted(f"{j} running ahead of its goal ({self.goal} -> {s.pos}): gravity is pulling it "
+                          f"faster than torque limit {self.torque_limit}/1000 can brake")
         lo, hi = self.limits
         if not lo - 20 <= s.pos <= hi + 20:
             raise Aborted(f"{j} at {s.pos}, outside the limits {lo}..{hi}")
@@ -424,6 +447,11 @@ class Homer:
         if self.on_sample is not None:
             self.on_sample(row)
         return s
+
+    def _ahead(self, pos: int) -> bool:
+        """Past the goal in the direction of travel by more than a held joint ever is."""
+        d = self._dir
+        return d != 0 and d * (pos - self.goal) > config.OVERRUN_TICKS
 
     def _event(self, msg: str) -> None:
         self.on_event(f"[{self.joint}] {msg}")

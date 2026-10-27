@@ -18,8 +18,8 @@ from .bus import load_calibration
 from .homing import Homer, Refused
 
 PROBE_REGS = ["Present_Position", "Min_Position_Limit", "Max_Position_Limit", "Homing_Offset", "Torque_Enable",
-              "Torque_Limit", "Max_Torque_Limit", "P_Coefficient", "Present_Voltage", "Present_Temperature",
-              "Status"]
+              "Torque_Limit", "Max_Torque_Limit", "P_Coefficient", "Protective_Torque", "Protection_Time",
+              "Overload_Torque", "Present_Voltage", "Present_Temperature", "Status"]
 
 
 def make_bus(args, calibration):
@@ -36,7 +36,8 @@ def cmd_probe(args) -> int:
     try:
         short = {"Present_Position": "pos", "Min_Position_Limit": "min_lim", "Max_Position_Limit": "max_lim",
                  "Homing_Offset": "offset", "Torque_Enable": "torque", "Torque_Limit": "tq_lim",
-                 "Max_Torque_Limit": "max_tq", "P_Coefficient": "P", "Present_Voltage": "dV",
+                 "Max_Torque_Limit": "max_tq", "P_Coefficient": "P", "Protective_Torque": "prot_tq",
+                 "Protection_Time": "prot_t", "Overload_Torque": "ovl_tq", "Present_Voltage": "dV",
                  "Present_Temperature": "C", "Status": "status"}
         print(f"{'joint':<14}" + "".join(f"{short[r]:>9}" for r in PROBE_REGS) + "   json range / offset")
         for j in config.JOINTS:
@@ -54,9 +55,11 @@ def cmd_probe(args) -> int:
 
 def cmd_home(args) -> int:
     cal = load_calibration(args.calibration)
-    ends = ("min", "max") if args.end == "both" else (args.end,)
+    ends = {"both": ("min", "max"), "none": ()}.get(args.end, (args.end,))
     if not args.sim:
-        print(f"About to move the REAL follower's {args.joint} into its {' and '.join(ends)} stop(s), "
+        what = f"move the REAL follower's {args.joint} into its {' and '.join(ends)} stop(s)" if ends else \
+            f"torque the REAL follower's {args.joint} at the homing limit and hold it (no motion)"
+        print(f"About to {what}, "
               f"torque limit {args.torque_limit or config.HOMING_TORQUE_LIMIT[args.joint]}/1000.\n"
               "Clear the area around the arm, keep a hand near the power switch. Ctrl-C stops it at any time.")
         if input(f"Type '{args.joint}' to start: ").strip() != args.joint:
@@ -92,7 +95,7 @@ def cmd_home(args) -> int:
         cand = report.write_run(run_dir, result, homer.rows, bus.writes, cal, "sim" if args.sim else "real")
     finally:
         bus.close()
-    print("\n" + report.summary(result))
+    print("\n" + report.summary(result, homer.rows))
     print(f"\nrun saved to {run_dir}\n  watch it:   touchstone plot {run_dir}\n  compare:    touchstone diff {run_dir}")
     if args.sim:
         truth = bus.joints[args.joint].stops
@@ -172,7 +175,8 @@ def main(argv=None) -> int:
     sp = sub.add_parser("home", help="find one joint's stops")
     sim_flags(sp)
     sp.add_argument("--joint", required=True, choices=config.JOINTS)
-    sp.add_argument("--end", choices=["min", "max", "both"], default="both")
+    sp.add_argument("--end", choices=["min", "max", "both", "none"], default="both",
+                    help="none = rehearsal: setup, hold check, restore, no motion")
     sp.add_argument("--torque-limit", type=int, default=None,
                     help=f"0..{config.TORQUE_LIMIT_CEILING} per mille (default per joint, see config.py)")
     sp.add_argument("--widen", type=int, default=config.WIDEN_TICKS,

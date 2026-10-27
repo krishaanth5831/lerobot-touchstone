@@ -6,7 +6,7 @@ where they are, and writes a calibration candidate. You no longer move it by han
 A *touchstone* is the reference you test against. Here the arm's own end stops are the
 reference, found by touching them.
 
-Status: **simulation-tested only (30 tests). Never run on the real arm yet.** It sits in
+Status: **simulation-tested only (37 tests). Never run on the real arm yet.** It sits in
 its own repo so it can be tested in isolation before it goes anywhere near lerobot, B.L.U.S.H
 or torque-tactile-sensing.
 
@@ -16,19 +16,26 @@ or torque-tactile-sensing.
 conda activate lerobot
 cd ~/Desktop/personal_projects/github/vinea-so101/lerobot-touchstone
 pip install -e .                                     # gives you the `touchstone` command
+                                                     # (or skip it and use `python -m touchstone`)
 
 touchstone home --joint gripper --sim --realtime     # live readout at real speed
 touchstone plot runs/<the run it printed>            # a window: position, goal, load, the touches
 touchstone diff runs/<the run it printed>            # what the candidate would change
 ```
 
-## On the real follower (first time: gripper only)
+## On the real follower: the first session
 
 ```bash
-touchstone probe                          # READ-ONLY: voltage, temps, limits, json vs motor
-touchstone home --joint gripper           # asks you to type 'gripper' first
+touchstone probe                              # 1. READ-ONLY: voltage, temps, limits, json vs motor
+touchstone home --joint gripper --end none    # 2. rehearsal: torque on at 15 %, hold, restore. NO motion
+touchstone probe                              # 3. must show no "motor differs from json"
+touchstone home --joint gripper               # 4. the real thing (asks you to type 'gripper' first)
 touchstone plot runs/<run>
 ```
+
+Step 2 is the first time any of this talks to real servos. It checks the register writes,
+the EEPROM widen-and-restore round trip, that the low torque limit really is in effect after
+torque-on, and the real cycle time (printed as `cycle: mean ... ms`). Don't skip it.
 
 Before you run it: rest the arm folded with **torque off on every joint** (it refuses
 otherwise), clear the area, keep a hand near the power switch. Ctrl-C stops it at any
@@ -64,8 +71,11 @@ Every number lives in [`touchstone/config.py`](touchstone/config.py), with the r
 | Goal lead cap | ≤ 30 ticks ahead of the joint | A second, independent cap. At P=16 that is ≤ ~27 % torque even if the first cap failed |
 | Speed | 13°/s, 4°/s for the measurement; servo `Goal_Velocity` / `Acceleration` capped too | Slow contact, small impact |
 | Time on the stop | 0.3 s per touch, then back off | Never left pressed into a stop |
+| Readback after torque-on | `Torque_Limit`, `Goal_Velocity`, `Acceleration` must read back as set | The caps are only real if the servo still holds them; aborts before any motion |
+| P gain | lead cap scaled by 16/P, P > 32 refused | The lead cap is a force cap only through P (factory default is 32) |
 | Hold check | must settle within 0.6 s at the homing torque, before any motion | If gravity beats the low torque limit, it aborts before moving |
 | Sag / wrong-way | sliding 10 ticks back from its best progress aborts | Gravity winning mid-push |
+| Runaway | running > 40 ticks ahead of its goal aborts, and full torque comes back | Gravity pulling it faster than the low limit can brake (arm swinging out) |
 | Plausibility | stop must be within 60 ticks of the calibrated end | The table or a self-collision is not a joint limit |
 | Search window | never commands past calibrated end ± 60 ticks | It can't wander |
 | Status register | any bit (overload, overcurrent, overheat, voltage) aborts | The servo's own alarms |
@@ -98,6 +108,13 @@ candidate_calibration.json  range_min/max moved to the ok stops (5 ticks inside 
 
 **It never touches `~/.cache/huggingface/lerobot/calibration/`.** Applying a candidate is a
 manual copy after reading `touchstone diff`.
+
+## Open question: which fingers are on the follower?
+
+With the stock jaws, "closed" is a hard stop. With the fin-ray fingers it is soft: they
+bend, so the closed reading depends on the torque limit. If those are fitted, the gripper's
+`min` end measures the fingers, not the joint. Use `--end max` for the gripper, or home
+it with the stock jaws.
 
 ## Decisions taken for v1 (change them if you disagree)
 

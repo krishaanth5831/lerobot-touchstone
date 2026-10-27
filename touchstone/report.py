@@ -54,9 +54,13 @@ def write_run(run_dir: Path, result: JointResult, rows: list[dict], writes: list
     return path
 
 
-def summary(result: JointResult) -> str:
+def summary(result: JointResult, rows: list[dict] | None = None) -> str:
     lines = [f"{result.joint}: torque limit {result.torque_limit}/1000, widen {result.widen}, "
              f"tolerance {result.tolerance}"]
+    if rows and len(rows) > 2:
+        dts = [b["t"] - a["t"] for a, b in zip(rows, rows[1:])]
+        lines.append(f"  cycle: mean {1000 * sum(dts) / len(dts):.1f} ms, max {1000 * max(dts):.1f} ms "
+                     f"(target {1000 / config.CYCLE_HZ:.0f} ms)")
     for e in result.ends:
         touches = ", ".join(f"{t.kind}@{t.position} (peak load {t.peak_load})" for t in e.touches)
         lines.append(f"  {e.end:>3}: {e.verdict:<12} calibrated {e.expected:>5}  found {e.stop!s:>5}  "

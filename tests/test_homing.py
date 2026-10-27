@@ -283,3 +283,67 @@ def test_run_outputs(tmp_path):
     assert report.new_run_dir("gripper", tmp_path) != run      # never reuses a folder
     text = report.diff(CAL, json.loads((run / "candidate_calibration.json").read_text()))
     assert "gripper" in text and "(unchanged)" in text
+
+
+# ---------------------------------------------------------------- added after review
+def test_caps_not_in_effect_after_torque_on_aborts_before_motion():
+    # if the firmware reloaded Torque_Limit from Max_Torque_Limit on the enable edge,
+    # the force cap would silently be 100 %: must abort before the joint does anything
+    bus = sim()
+    real_on = bus.torque_on
+
+    def torque_on(motor):
+        real_on(motor)
+        bus.joints[motor].reg["Torque_Limit"] = bus.joints[motor].reg["Max_Torque_Limit"]
+
+    bus.torque_on = torque_on
+    before = {j: registers(bus, j) for j in config.JOINTS}
+    h, res = home(bus, "gripper")
+    assert res.aborted and "caps are not in effect" in res.aborted
+    assert h.rows == []                                   # not a single cycle ran
+    assert_restored(bus, before)
+
+
+def test_rehearsal_moves_nothing_and_restores_everything():
+    bus = sim()
+    before = {j: registers(bus, j) for j in config.JOINTS}
+    start = {j: J.pos for j, J in bus.joints.items()}
+    h, res = home(bus, "gripper", ends=())
+    assert res.aborted is None and res.ends == [] and not res.restore_errors
+    assert {r["phase"] for r in h.rows} <= {"hold-check", "return"}
+    assert all(abs(bus.joints[j].pos - start[j]) <= 2 for j in start)
+    assert_restored(bus, before)
+    widen = [(r, v) for _, m, r, v in bus.writes if r.endswith("Position_Limit")]
+    assert widen == [("Min_Position_Limit", 1930), ("Max_Position_Limit", 3581),
+                     ("Min_Position_Limit", 2030), ("Max_Position_Limit", 3481)]
+
+
+@pytest.mark.parametrize("p_gain,lead", [(16, 30), (32, 15), (8, 30)])
+def test_lead_cap_scales_with_p_gain(p_gain, lead):
+    bus = sim()
+    bus.joints["gripper"].reg["P_Coefficient"] = p_gain
+    h, res = home(bus, "gripper", ends=("max",))
+    assert h.lead_max == lead and res.ends[0].verdict == "ok"
+
+
+def test_refuses_p_gain_above_max():
+    bus = sim()
+    bus.joints["gripper"].reg["P_Coefficient"] = 64
+    assert "P_Coefficient" in refuse(bus)
+
+
+def test_gravity_runaway_aborts_and_full_torque_catches_it():
+    # easy to hold at the start pose, but the further it goes toward min the harder gravity
+    # pulls it that way (the arm swinging out past vertical): the low torque limit can't brake
+    def gravity(pos):
+        return -0.9 * min(1.0, max(0.0, (1750 - pos) / 300))
+
+    bus = sim(gravity_nm={"shoulder_lift": gravity})
+    h, res = home(bus, "shoulder_lift", ends=("min",), torque_limit=150)
+    assert res.aborted and "running ahead" in res.aborted
+    J = bus.joints["shoulder_lift"]
+    assert J.reg["Torque_Limit"] == 1000
+    caught_at = J.pos
+    J.reg["Torque_Enable"] = 1                 # what the arm does between restore and release
+    bus.sleep(1.0)
+    assert abs(J.pos - caught_at) < 40          # held by full torque, not falling

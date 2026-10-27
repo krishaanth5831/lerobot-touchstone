@@ -48,7 +48,11 @@ CYCLE_HZ = 50                 # one read-decide-write cycle every 20 ms
 STEP_FAST_TICKS = 3           # first touch:  150 ticks/s ~ 13 deg/s
 STEP_SLOW_TICKS = 1           # second touch:  50 ticks/s ~  4 deg/s (the measurement)
 STEP_MOVE_TICKS = 4           # backing off and returning to the start pose
-LEAD_MAX_TICKS = 30           # goal never more than this ahead of the joint (see top)
+LEAD_MAX_TICKS = 30           # goal never more than this ahead of the joint (see top), at P=16
+# The lead cap is a force cap only through the P gain: at P=32 (Feetech's factory default)
+# the same lead pushes twice as hard, so the cap is scaled by 16/P and P above this refused.
+P_REFERENCE = 16
+P_MAX = 32
 BACKOFF_TICKS = 40            # after a touch, pull this far away from the stop
 # Speed and acceleration caps inside the servo (RAM, restored after the run). Goal_Velocity
 # in position mode is the max speed in steps/s (0 = unlimited); Acceleration is in
@@ -97,7 +101,12 @@ START_MARGIN_TICKS = 30
 # progress aborts. The cleanup then puts the normal Torque_Limit back, which catches the joint.
 HOLD_CHECK_S = 0.6
 HOLD_SAG_MAX_TICKS = 30
-SAG_TICKS = 10       # the joint must start within the calibrated range +- this
+SAG_TICKS = 10
+# The opposite failure: gravity pulling the joint the way it is commanded, faster than the
+# low torque limit can brake. A held joint never runs more than ~torque_limit/9 ticks past its
+# goal (P=16), so further than this ahead of the goal = runaway: abort, and the cleanup puts
+# the full Torque_Limit back to catch it.
+OVERRUN_TICKS = 40       # the joint must start within the calibrated range +- this
 TEMP_VOLT_EVERY = 10          # read temperature and voltage every N cycles (5 Hz)
 APPROACH_TIMEOUT_EXTRA_S = 5.0
 

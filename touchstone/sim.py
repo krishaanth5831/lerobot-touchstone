@@ -39,7 +39,8 @@ READ_ONLY = {"Present_Position", "Present_Load", "Present_Voltage", "Present_Tem
 
 
 class SimJoint:
-    def __init__(self, name: str, cal: dict, stops: tuple[float, float], pos: float, gravity_nm: float = 0.0):
+    def __init__(self, name: str, cal: dict, stops: tuple[float, float], pos: float, gravity_nm=0.0):
+        """gravity_nm: N.m in the +tick direction, a constant or a function of position."""
         self.name = name
         self.stops = stops
         self.pos = float(pos)
@@ -53,7 +54,8 @@ class SimJoint:
             "Acceleration": 254, "Goal_Velocity": 0, "Goal_Position": int(round(pos)),
             "Min_Position_Limit": cal["range_min"], "Max_Position_Limit": cal["range_max"],
             "Homing_Offset": cal["homing_offset"], "Operating_Mode": 0, "P_Coefficient": 16,
-            "Protection_Current": 250, "Overload_Torque": 25, "Status": 0, "Present_Voltage": 120,
+            "Protection_Current": 250, "Overload_Torque": 25, "Protective_Torque": 20, "Protection_Time": 200,
+            "Status": 0, "Present_Voltage": 120,
         }
 
     @property
@@ -75,7 +77,7 @@ class SimJoint:
         if self.obstacle is not None:
             side, tick = self.obstacle
             lo, hi = (max(lo, tick), hi) if side == "min" else (lo, min(hi, tick))
-        ext = self.gravity_nm
+        ext = self.gravity_nm(self.pos) if callable(self.gravity_nm) else self.gravity_nm
         if self.pos < lo:
             ext += STOP_STIFFNESS_NM * (lo - self.pos)
         if self.pos > hi:
