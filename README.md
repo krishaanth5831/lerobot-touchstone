@@ -109,12 +109,12 @@ candidate_calibration.json  range_min/max moved to the ok stops (5 ticks inside 
 **It never touches `~/.cache/huggingface/lerobot/calibration/`.** Applying a candidate is a
 manual copy after reading `touchstone diff`.
 
-## Open question: which fingers are on the follower?
+## Gripper fingers
 
-With the stock jaws, "closed" is a hard stop. With the fin-ray fingers it is soft: they
-bend, so the closed reading depends on the torque limit. If those are fitted, the gripper's
-`min` end measures the fingers, not the joint. Use `--end max` for the gripper, or home
-it with the stock jaws.
+The follower still has the stock jaws (2026-10-27), so "closed" is a hard stop and the
+gripper homes both ends. Once the fin-ray fingers are fitted, the closed end is soft: they
+bend, and the closed reading depends on the torque limit. From then on, home the gripper with
+`--end max`, or home it with the stock jaws.
 
 ## Decisions taken for v1 (change them if you disagree)
 
