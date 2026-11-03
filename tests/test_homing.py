@@ -367,3 +367,28 @@ def test_stiff_joint_parked_short_of_the_search_limit_is_no_stop_not_a_timeout()
     _, res = home(bus, "shoulder_pan")
     assert res.aborted is None
     assert [e.verdict for e in res.ends] == ["no_stop", "no_stop"]
+
+
+def test_slow_touch_after_a_short_backoff_is_not_a_false_stop():
+    # real arm, 2026-11-03: shoulder_pan touch 1 stopped at 676, the backoff parked short on
+    # friction, and touch 2 was called a stop at 709 (load 48 of 80) before it ever pushed.
+    # base: turns at load ~70 once moving, but needs more to break away from rest (stiction).
+    # The sim's servo is stiffer per tick than the real one, so this does NOT reproduce the old
+    # false stop; it guards that the new rule (full lead cap for a whole window) still finds
+    # both stops on a sticky joint.
+    bus = sim(stops={**STOPS, "shoulder_pan": (676.0, 3314.0)}, friction_nm={"shoulder_pan": 0.12},
+              static_nm={"shoulder_pan": 0.22})
+    _, res = home(bus, "shoulder_pan", torque_limit=80, widen=150, tolerance=150)
+    assert res.aborted is None
+    assert [e.verdict for e in res.ends] == ["ok", "ok"]
+    assert abs(res.ends[0].stop - 676) <= 3 and abs(res.ends[1].stop - 3314) <= 3
+
+
+def test_joint_too_weak_to_leave_its_stop_is_suspect_not_an_abort():
+    # real arm, 2026-11-03: elbow_flex rests folded on its max stop (3133, stop 3135) and at
+    # 80/1000 could not unfold; the backoff then ran into the max stop and aborted the run.
+    bus = sim(stops={**STOPS, "elbow_flex": (900.0, 3135.0)}, pose={"elbow_flex": 3133},
+              gravity_nm={"elbow_flex": 0.30})                 # pulls it folded, toward max
+    _, res = home(bus, "elbow_flex", torque_limit=80)
+    assert res.aborted is None and not res.restore_errors
+    assert res.ends[0].verdict == "suspect" and "could not move off its start pose" in res.ends[0].note

@@ -40,9 +40,12 @@ READ_ONLY = {"Present_Position", "Present_Load", "Present_Voltage", "Present_Tem
 
 class SimJoint:
     def __init__(self, name: str, cal: dict, stops: tuple[float, float], pos: float, gravity_nm=0.0,
-                 friction_nm=FRICTION_NM):
-        """gravity_nm: N.m in the +tick direction, a constant or a function of position."""
+                 friction_nm=FRICTION_NM, static_nm=None):
+        """gravity_nm: N.m in the +tick direction, a constant or a function of position.
+        friction_nm: while moving; static_nm: to start moving from rest (stiction, default the same)."""
         self.friction_nm = friction_nm
+        self.static_nm = friction_nm if static_nm is None else static_nm
+        self.moving = False
         self.name = name
         self.stops = stops
         self.pos = float(pos)
@@ -85,8 +88,10 @@ class SimJoint:
         if self.pos > hi:
             ext -= STOP_STIFFNESS_NM * (self.pos - hi)
         net = drive + ext
-        excess = (1 if net > 0 else -1) * max(abs(net) - self.friction_nm, 0.0)
+        fric = self.friction_nm if self.moving else self.static_nm
+        excess = (1 if net > 0 else -1) * max(abs(net) - fric, 0.0)
         v = excess / (self.K * TIME_CONSTANT)
+        self.moving = abs(v) > 1.0               # ticks/s
         if r["Goal_Velocity"] > 0:
             v = max(-r["Goal_Velocity"], min(r["Goal_Velocity"], v))
         self.pos += v * dt
@@ -105,7 +110,8 @@ class SimBus:
 
     def __init__(self, calibration: dict[str, dict], stops: dict[str, tuple[float, float]] | None = None,
                  pose: dict[str, float] | None = None, gravity_nm: dict[str, float] | None = None,
-                 seed: int = 0, realtime: bool = False, friction_nm: dict[str, float] | None = None):
+                 seed: int = 0, realtime: bool = False, friction_nm: dict[str, float] | None = None,
+                 static_nm: dict[str, float] | None = None):
         self.rng = random.Random(seed)
         self.calibration = calibration
         self.joints: dict[str, SimJoint] = {}
@@ -117,7 +123,7 @@ class SimBus:
                 st = (c["range_min"] - self.rng.uniform(2, 15), c["range_max"] + self.rng.uniform(2, 15))
             p = (pose or {}).get(j, (c["range_min"] + c["range_max"]) / 2)
             self.joints[j] = SimJoint(j, c, st, p, (gravity_nm or {}).get(j, 0.0),
-                                      (friction_nm or {}).get(j, FRICTION_NM))
+                                      (friction_nm or {}).get(j, FRICTION_NM), (static_nm or {}).get(j))
         self.t = 0.0
         self.realtime = realtime
         self.writes: list[tuple[float, str, str, int]] = []

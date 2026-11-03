@@ -305,6 +305,7 @@ class Homer:
         search = max(fw, expected - self.tolerance) if d < 0 else min(fw, expected + self.tolerance)
 
         self._event(f"{end}: touch 1 (fast) toward {expected}, search limit {search}")
+        p0 = self._read_pos()
         t1 = self._approach(d, config.STEP_FAST_TICKS, search, f"{end}-touch1")
         r.touches.append(t1)
         self._backoff(t1.position, d, end)
@@ -314,6 +315,9 @@ class Homer:
         if abs(t1.position - expected) > self.tolerance:
             r.verdict, r.stop = "suspect", t1.position
             r.note = f"stalled at {t1.position}, {t1.position - expected:+d} from the calibrated end"
+            if abs(t1.position - p0) < config.STUCK_AT_START_TICKS:
+                r.note += (f"; it could not move off its start pose ({p0}): torque limit {self.torque_limit}/1000 "
+                           "is too weak for this joint here, or something blocks it")
             return r
 
         self._event(f"{end}: touch 2 (slow)")
@@ -339,6 +343,7 @@ class Homer:
         # keep the current goal: resetting it to pos would drop a gravity-loaded joint's preload
         t0, hist, peak, best = s.t, deque([(s.t, s.pos)]), 0, s.pos
         timeout = abs(search - s.pos) / (step * config.CYCLE_HZ) + config.APPROACH_TIMEOUT_EXTRA_S
+        push_since = None          # when the goal reached the full lead cap ahead of the joint
         while True:
             self.goal = self._next_goal(s.pos, d, step, search)
             self.bus.write("Goal_Position", self.joint, self.goal)
@@ -349,9 +354,17 @@ class Homer:
             hist.append((s.t, s.pos))
             while len(hist) > 1 and s.t - hist[1][0] >= config.STALL_WINDOW_S:
                 hist.popleft()
+            lead = d * (self.goal - s.pos)
+            # A stop means: pushed with the whole lead cap (the most force allowed) for a full
+            # STALL_WINDOW_S and still no progress. "Lead >= 8 at this instant" was not enough: on
+            # the real arm a slow touch on shoulder_pan, still ramping up from a backoff (load 48
+            # of 80), was called a stop 33 ticks before the real one.
+            if lead >= self.lead_max - step:
+                push_since = s.t if push_since is None else push_since
+            else:
+                push_since = None
             if s.t - hist[0][0] >= config.STALL_WINDOW_S and d * (s.pos - hist[0][1]) < config.STALL_PROGRESS_TICKS:
-                lead = d * (self.goal - s.pos)
-                if lead >= config.STALL_MIN_LEAD_TICKS:
+                if push_since is not None and s.t - push_since >= config.STALL_WINDOW_S:
                     return Touch("stop", int(statistics.median(p for _, p in list(hist)[-5:])), s.t, peak)
                 # Goal parked on the search limit and the joint stopped short of it with too
                 # little lead to call a stall: friction, not a stop. A stiff joint (shoulder_pan
@@ -362,9 +375,11 @@ class Homer:
                 raise Aborted(f"{phase}: no stall and no limit after {timeout:.1f} s (at {s.pos}, goal {self.goal})")
 
     def _backoff(self, pos: int, d: int, end: str) -> None:
-        self._move_to(pos - d * config.BACKOFF_TICKS, config.STEP_MOVE_TICKS, f"{end}-backoff")
+        # blocked_ok: backing off can run into the joint's OTHER stop when it never got far from
+        # it (real arm: elbow_flex starts folded on its max stop and could not unfold at 80/1000).
+        self._move_to(pos - d * config.BACKOFF_TICKS, config.STEP_MOVE_TICKS, f"{end}-backoff", blocked_ok=True)
 
-    def _move_to(self, target: int, step: int, phase: str) -> None:
+    def _move_to(self, target: int, step: int, phase: str, blocked_ok: bool = False) -> None:
         """Step the goal toward target with the same lead cap; a stall on the way aborts."""
         self.phase = phase
         lo, hi = self.limits
@@ -389,6 +404,11 @@ class Homer:
                 if abs(target - s.pos) <= 3 or (still and abs(target - s.pos) <= config.HOLD_SAG_MAX_TICKS):
                     return
             elif still and d * (self.goal - s.pos) >= config.STALL_MIN_LEAD_TICKS:
+                if blocked_ok:
+                    self.goal = s.pos                      # stop pressing, hold here
+                    self.bus.write("Goal_Position", self.joint, self.goal)
+                    self._event(f"{phase}: blocked at {s.pos} on the way to {target}, holding there")
+                    return
                 raise Aborted(f"{phase}: blocked at {s.pos} while moving to {target}")
             if s.t - t0 > timeout:
                 raise Aborted(f"{phase}: did not reach {target} in {timeout:.1f} s (at {s.pos})")

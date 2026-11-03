@@ -68,6 +68,7 @@ STALL_PROGRESS_TICKS = 2
 STALL_MIN_LEAD_TICKS = 8
 # The two touches of one end must agree to within this, or the end is not accepted.
 REPEAT_TOLERANCE_TICKS = 6
+STUCK_AT_START_TICKS = 20     # a first touch this close to where it started = "could not move at all"
 # A found stop must lie this close to the end of the current calibrated range. Anything
 # further is probably the table, the arm's own body, or gravity winning: "suspect".
 STOP_TOLERANCE_TICKS = 60
