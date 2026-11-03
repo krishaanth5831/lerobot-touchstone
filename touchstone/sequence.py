@@ -69,7 +69,7 @@ class SequenceResult:
 def run_sequence(bus, cal: dict, runs_dir: Path, plan: list[Step] = PLAN, mode: str = "real",
                  pause: Callable[[Step, int], str] = lambda step, tq: "",
                  on_event: Callable[[str], None] = print, on_sample=None,
-                 confirm_release=None) -> SequenceResult:
+                 confirm_release=None, stages: dict[str, dict[str, int]] | None = None) -> SequenceResult:
     """pause(step, torque) -> "" to go, "s" to skip this joint, "q" to stop."""
     seq = SequenceResult()
     for i, step in enumerate(plan):
@@ -90,7 +90,8 @@ def run_sequence(bus, cal: dict, runs_dir: Path, plan: list[Step] = PLAN, mode: 
             report.write_backup(run_dir, bus, cal)
             first_write = len(bus.writes)
             homer = Homer(bus, cal, step.joint, torque_limit=tq, widen=step.widen, tolerance=step.tolerance,
-                          on_event=on_event, on_sample=on_sample, confirm_release=confirm_release)
+                          on_event=on_event, on_sample=on_sample, confirm_release=confirm_release,
+                          stage=(stages or {}).get(step.joint))
             try:
                 res = homer.run(todo)
             except Refused as e:
@@ -102,7 +103,7 @@ def run_sequence(bus, cal: dict, runs_dir: Path, plan: list[Step] = PLAN, mode: 
             for e in res.ends:
                 seq.verdicts.setdefault(step.joint, {})[e.end] = e.verdict
             on_event(report.summary(res, homer.rows))
-            if res.restore_errors:
+            if res.restore_errors or homer._staged:
                 seq.stopped = f"{step.joint}: RESTORE INCOMPLETE"
                 break
             weak = too_weak(res)

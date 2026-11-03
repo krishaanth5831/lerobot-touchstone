@@ -65,6 +65,7 @@ class JointResult:
     ends: list[EndResult] = field(default_factory=list)
     aborted: str | None = None
     restore_errors: list[str] = field(default_factory=list)
+    staged: dict = field(default_factory=dict)          # other joint -> staging tick it was moved to
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -83,7 +84,8 @@ class Homer:
                  widen: int = config.WIDEN_TICKS, tolerance: int = config.STOP_TOLERANCE_TICKS,
                  hold_others: bool = True, on_event: Callable[[str], None] = print,
                  on_sample: Callable[[dict], None] | None = None,
-                 confirm_release: Callable[[], None] | None = None):
+                 confirm_release: Callable[[], None] | None = None,
+                 stage: dict[str, int] | None = None):
         if joint not in config.JOINTS:
             raise Refused(f"unknown joint {joint!r}; choose from {config.JOINTS}")
         self.bus = bus
@@ -106,6 +108,9 @@ class Homer:
         self._cycle = 0
         self._next_tick = 0.0
         self._dir = 0                             # direction of the current motion, 0 = holding
+        # staging: other joints moved to a hand-taught pose so this joint can sweep freely
+        self.stage = {m: int(t) for m, t in (stage or {}).items() if m != joint}
+        self._staged: dict[str, int] = {}         # joint -> its rest tick, while it is away from rest
         self._hot = 0                             # temperature readings in a row over the abort line
         self._bad_volt = 0
 
@@ -117,10 +122,14 @@ class Homer:
         try:
             self._setup()
             res.start_pos = self._read_pos()
+            self._stage_in()
+            res.staged = dict(self.stage)
+            self._hold_check()                             # in the pose it will sweep from
             for end in ends:
                 res.ends.append(self._home_end(end))
             self._event(f"returning to the start pose ({res.start_pos})")
             self._move_to(res.start_pos, config.STEP_MOVE_TICKS, "return")
+            self._stage_out()                              # back to rest BEFORE anything is let go
         except BaseException as e:  # noqa: BLE001 - Ctrl-C included: always clean up, then report
             if isinstance(e, Aborted):
                 res.aborted = str(e)
@@ -132,6 +141,72 @@ class Homer:
         finally:
             res.restore_errors = self._restore(snapshot, aborted=res.aborted is not None)
         return res
+
+    # ================================================================== staging
+    def _stage_in(self) -> None:
+        for m in config.STAGE_ORDER:
+            if m in self.stage:
+                rest = self.bus.read("Present_Position", m)
+                self._staged[m] = rest                      # marked BEFORE it moves
+                self._event(f"staging {m}: {rest} -> {self.stage[m]}")
+                self._move_other(m, self.stage[m])
+        if self.stage:
+            self._next_tick = self.bus.now()
+
+    def _stage_out(self) -> None:
+        for m in reversed(list(self._staged)):
+            self._event(f"unstaging {m}: back to {self._staged[m]}")
+            self._move_other(m, self._staged[m])
+            del self._staged[m]
+
+    def _move_other(self, m: str, target: int) -> None:
+        """Move one held joint to target at its staging torque cap, watching it and the homed joint."""
+        b = self.bus
+        hold_limit = b.read("Torque_Limit", m)
+        lim = config.STAGE_TORQUE_LIMIT[m]
+        b.write("Torque_Limit", m, lim)
+        if b.read("Torque_Limit", m) != lim:
+            b.write("Torque_Limit", m, hold_limit)
+            raise Aborted(f"staging {m}: Torque_Limit did not read back as {lim}")
+        self.phase, self._dir = f"stage {m}", 0        # the homed joint holds still meanwhile
+        try:
+            pos = b.read("Present_Position", m)
+            goal = pos
+            d = 1 if target >= pos else -1
+            hist = deque([(b.now(), pos)])
+            t0 = b.now()
+            timeout = abs(target - pos) / (config.STAGE_STEP_TICKS * config.CYCLE_HZ) + config.APPROACH_TIMEOUT_EXTRA_S
+            self._next_tick = b.now()
+            while True:
+                lead_cap = pos + d * config.STAGE_LEAD_MAX_TICKS
+                goal = min(goal + config.STAGE_STEP_TICKS, lead_cap, target) if d > 0 else \
+                    max(goal - config.STAGE_STEP_TICKS, lead_cap, target)
+                b.write("Goal_Position", m, goal)
+                self._wait_cycle()
+                self._sample()                              # the homed joint must stay put meanwhile
+                pos, st = b.read("Present_Position", m), b.read("Status", m)
+                t = b.now()
+                if st:
+                    raise Aborted(f"staging {m}: Status {config.describe_status(st)} at {pos}")
+                if abs(pos - goal) > config.OVERRUN_TICKS + config.STAGE_LEAD_MAX_TICKS:
+                    raise Aborted(f"staging {m}: at {pos}, {pos - goal:+d} from its goal {goal}: not under control")
+                hist.append((t, pos))
+                while len(hist) > 1 and t - hist[1][0] >= config.STALL_WINDOW_S:
+                    hist.popleft()
+                still = t - hist[0][0] >= config.STALL_WINDOW_S and abs(pos - hist[0][1]) < config.STALL_PROGRESS_TICKS
+                if goal == target and (abs(target - pos) <= 3 or (still and abs(target - pos) <= config.HOLD_SAG_MAX_TICKS)):
+                    return
+                if goal != target and still and d * (goal - pos) >= config.STALL_MIN_LEAD_TICKS:
+                    raise Aborted(f"staging {m}: blocked at {pos} on the way to {target} (pushing at most "
+                                  f"{lim}/1000). Something is in the way: re-teach this pose")
+                if t - t0 > timeout:
+                    raise Aborted(f"staging {m}: did not reach {target} in {timeout:.1f} s (at {pos})")
+        finally:
+            # hold exactly where it is, at the limit it held with before (no jump toward a goal)
+            try:
+                b.write("Goal_Position", m, b.read("Present_Position", m))
+            finally:
+                b.write("Torque_Limit", m, hold_limit)
 
     def preflight(self) -> None:
         """Read-only checks. Any failure raises Refused before a single write."""
@@ -177,6 +252,12 @@ class Homer:
         lo, hi = cal[j]["range_min"], cal[j]["range_max"]
         if not lo - config.START_MARGIN_TICKS <= pos <= hi + config.START_MARGIN_TICKS:
             problems.append(f"{j}: at {pos}, outside its calibrated range {lo}..{hi}")
+        if self.stage and not self.hold_others:
+            problems.append("staging needs the other joints held (hold_others)")
+        for m, t in self.stage.items():
+            mlo, mhi = cal[m]["range_min"], cal[m]["range_max"]
+            if not mlo <= t <= mhi:
+                problems.append(f"staging pose: {m} {t} is outside its calibrated range {mlo}..{mhi}")
         if problems:
             raise Refused("preflight failed, nothing was written:\n  " + "\n  ".join(problems))
         self._event(f"preflight ok: {j} at {pos}, range {lo}..{hi}, torque limit {self.torque_limit}/1000, "
@@ -224,7 +305,6 @@ class Homer:
         if got != want:
             raise Aborted(f"after torque on, {j} reads {got}, expected {want}: the caps are not in effect")
         self._next_tick = b.now()
-        self._hold_check()
 
     def _hold_check(self) -> None:
         """At the homing torque limit, can the joint even hold itself where it lies?"""
@@ -263,7 +343,16 @@ class Homer:
             step("hold homed joint", lambda: b.write("Goal_Position", j, b.read("Present_Position", j)))
             for r in ("Torque_Limit", "Acceleration", "Goal_Velocity"):
                 step(f"restore {r}", lambda r=r: b.write(r, j, h[r]))
-            if aborted and self.confirm_release is not None:
+            if self._staged:
+                # Still staged (an abort or Ctrl-C before unstaging finished): releasing torque
+                # would drop the arm. Everything holds; only a person supporting it may let go.
+                self._event("the arm is still in its staging pose (" + ", ".join(self._staged) + ") and holding")
+                if self.confirm_release is None:
+                    errors.append("arm left staged and holding: no one to confirm a release")
+                    self._event("RESTORE INCOMPLETE:\n  " + "\n  ".join(errors))
+                    return errors                     # holds everything, EEPROM left widened
+                step("confirm release", self.confirm_release)
+            elif aborted and self.confirm_release is not None:
                 step("confirm release", self.confirm_release)
             want = (h["Min_Position_Limit"], h["Max_Position_Limit"])
 

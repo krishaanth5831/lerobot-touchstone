@@ -22,6 +22,14 @@ PROBE_REGS = ["Present_Position", "Min_Position_Limit", "Max_Position_Limit", "H
               "Overload_Torque", "Present_Voltage", "Present_Temperature", "Status"]
 
 
+def load_stage(args, joint: str) -> dict[str, int]:
+    """The taught staging pose for this joint (other joints only), or {}."""
+    if getattr(args, "no_stage", False) or not config.STAGING_JSON.exists():
+        return {}
+    entry = json.loads(config.STAGING_JSON.read_text()).get(joint)
+    return {m: t for m, t in entry["pose"].items() if m != joint} if entry else {}
+
+
 def make_bus(args, calibration):
     if args.sim:
         from .sim import SimBus
@@ -84,9 +92,12 @@ def cmd_home(args) -> int:
         def release():
             input("\nThe arm is holding still. Support it with your hand, then press ENTER to release torque.")
 
+        stage = load_stage(args, args.joint)
+        if stage:
+            event(f"staging pose from {config.STAGING_JSON.name}: " + ", ".join(f"{m} {t}" for m, t in stage.items()))
         homer = Homer(bus, cal, args.joint, torque_limit=args.torque_limit, widen=args.widen,
                       tolerance=args.tolerance, on_event=event, on_sample=live,
-                      confirm_release=None if args.sim else release)
+                      confirm_release=None if args.sim else release, stage=stage)
         try:
             result = homer.run(ends)
         except Refused as e:
@@ -142,6 +153,7 @@ def cmd_home_all(args) -> int:
 
     try:
         seq = run_sequence(bus, cal, args.runs_dir, plan=plan, mode="sim" if args.sim else "real",
+                           stages={s.joint: load_stage(args, s.joint) for s in plan},
                            pause=pause, on_event=event, on_sample=live,
                            confirm_release=None if args.sim else release)
     finally:
@@ -153,6 +165,59 @@ def cmd_home_all(args) -> int:
     print(report.diff(cal, seq.candidate))
     bad = seq.stopped or any(r.restore_errors for r, _ in seq.runs)
     return 3 if bad else 0
+
+
+def cmd_teach(args) -> int:
+    """Read-only: record the pose YOU put the arm in as the staging pose for one joint."""
+    import time
+    data = json.loads(config.STAGING_JSON.read_text()) if config.STAGING_JSON.exists() else {}
+    if not args.show and not args.joint:
+        print("teach needs --joint (or --show)")
+        return 2
+    if args.show:
+        print(json.dumps(data, indent=2) if data else "no staging poses taught yet")
+        return 0
+    if args.forget:
+        data.pop(args.joint, None)
+        config.STAGING_JSON.write_text(json.dumps(data, indent=2) + "\n")
+        print(f"{args.joint}: staging pose removed; it homes from the rest pose again")
+        return 0
+    cal = load_calibration(args.calibration)
+    bus = make_bus(args, cal)
+    try:
+        if any(bus.read("Torque_Enable", m) for m in config.JOINTS):
+            print("REFUSED: torque is on somewhere. Run this with the arm limp (torque off on every joint).")
+            return 2
+        print(f"Teach the staging pose for {args.joint}. Torque is off; nothing here moves the arm.\n"
+              f"  1. Pose the OTHER joints by hand so {args.joint} can travel from end to end touching\n"
+              f"     nothing: not the arm, not the table, not its cable. Keep the elbow folded if you can\n"
+              f"     (less weight to hold). Check it: sweep {args.joint} by hand to both ends.\n"
+              f"  2. Hold (or prop) the arm in that pose and press ENTER. It reads for 1 s.")
+        if not args.sim:
+            input("ENTER when posed: ")
+        reads = []
+        for _ in range(10):
+            reads.append({m: bus.read("Present_Position", m) for m in config.JOINTS})
+            bus.sleep(0.1) if args.sim else time.sleep(0.1)
+        pose = {m: int(round(sum(r[m] for r in reads) / len(reads))) for m in config.JOINTS}
+        spread = {m: max(r[m] for r in reads) - min(r[m] for r in reads) for m in config.JOINTS}
+    finally:
+        bus.close()
+    if max(spread[m] for m in config.JOINTS if m != args.joint) > 10:
+        print(f"REFUSED: the arm moved while reading ({spread}). Hold it still and try again.")
+        return 2
+    out = [m for m in config.JOINTS if m != args.joint
+           and not cal[m]["range_min"] <= pose[m] <= cal[m]["range_max"]]
+    if out:
+        print(f"REFUSED: {out} outside their calibrated range: {[(m, pose[m]) for m in out]}")
+        return 2
+    print("\n".join(f"  {m:<14}{pose[m]:>6}" + ("   (the joint being homed: ignored)" if m == args.joint else "")
+                    for m in config.JOINTS))
+    data[args.joint] = {"pose": pose, "taught": __import__("time").strftime("%Y-%m-%d %H:%M")}
+    config.STAGING_JSON.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"saved to {config.STAGING_JSON}. Next: touchstone home --joint {args.joint} --end none"
+          " (stages, holds, unstages; the homed joint does not move)")
+    return 0
 
 
 def cmd_plot(args) -> int:
@@ -255,11 +320,20 @@ def main(argv=None) -> int:
     sp.add_argument("--tolerance", type=int, default=config.STOP_TOLERANCE_TICKS,
                     help="how far from the calibrated end a stop may be and still count")
     sp.add_argument("--runs-dir", type=Path, default=config.RUNS_DIR)
+    sp.add_argument("--no-stage", action="store_true", help="ignore a taught staging pose, home from rest")
     sp.set_defaults(fn=cmd_home)
+
+    sp = sub.add_parser("teach", help="read-only: save the pose you hold the arm in as a joint's staging pose")
+    sim_flags(sp)
+    sp.add_argument("--joint", choices=config.JOINTS)
+    sp.add_argument("--show", action="store_true", help="print the taught poses")
+    sp.add_argument("--forget", action="store_true", help="remove this joint's staging pose")
+    sp.set_defaults(fn=cmd_teach)
 
     sp = sub.add_parser("home-all", help="home every joint in turn, light joints first, one merged candidate")
     sim_flags(sp)
     sp.add_argument("--only", nargs="+", choices=config.JOINTS, help="just these joints, in the safe order")
+    sp.add_argument("--no-stage", action="store_true", help="ignore taught staging poses, home from rest")
     sp.add_argument("--runs-dir", type=Path, default=config.RUNS_DIR)
     sp.set_defaults(fn=cmd_home_all)
 

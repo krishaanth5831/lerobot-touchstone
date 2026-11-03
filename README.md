@@ -62,6 +62,24 @@ It waits before each joint (ENTER = go, s = skip, q = stop). A joint that is too
 torque limit is retried one step up its ladder (top: 280/1000 for the elbow, 200 for the rest); a stall somewhere
 unexpected is never pushed harder. It ends with one merged candidate in `runs/<stamp>_all/`.
 
+## When the arm gets in its own way: staging poses
+
+Folded at rest, the arm's own links block some sweeps (the wrist can't roll fully). For such a
+joint, teach a staging pose once, by hand:
+
+```bash
+touchstone teach --joint wrist_roll            # read-only: pose the OTHER joints so wrist_roll sweeps freely, ENTER
+touchstone home --joint wrist_roll --end none  # stages, holds, unstages; wrist_roll itself does not move
+touchstone home --joint wrist_roll             # the real run, from the staging pose
+touchstone teach --show                        # what is taught; --forget --joint X removes one
+```
+
+Staging moves one joint at a time (shoulder_lift, elbow_flex, wrist_flex, shoulder_pan,
+wrist_roll, gripper), slowly, at a capped torque (`STAGE_TORQUE_LIMIT`), and aborts if blocked.
+It unstages in reverse BEFORE anything is let go. After an abort while staged, everything holds
+until you support the arm and press ENTER. `home` and `home-all` use taught poses
+automatically; `--no-stage` ignores them. The poses live in `staging.json` (committed).
+
 ## What one run does
 
 For one joint, each end:

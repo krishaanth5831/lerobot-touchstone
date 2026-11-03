@@ -3,7 +3,7 @@
     python scripts/gravity_torque.py [path/to/so101_new_calib.xml]
 
 Each joint is swept over its homing window (calibrated range + widen) with every other joint
-held at REST, the folded pose the arm homes from (read off `touchstone probe`, 2026-11-03).
+held at its taught staging pose (staging.json) if it has one, else at REST, the folded pose the arm homes from (read off `touchstone probe`, 2026-11-03).
 Angle 0 = middle of the calibrated range, lerobot's DEGREES formula, the same zero as
 so101_new_calib.xml (checked against the real follower in B.L.U.S.H sim/arm_map.py).
 "worst pose anywhere" = 4000 random poses, for reference only. The numbers behind
@@ -31,17 +31,22 @@ REST = {"shoulder_pan":2031,"shoulder_lift":791,"elbow_flex":3133,"wrist_flex":2
 WIDEN = {"wrist_roll":120,"shoulder_pan":150}
 print("\nrest pose gravity (load /1000):", {j: round(abs(v)/NM_PER_LOAD) for j,v in grav(REST).items()})
 out = {}
+STAGING = pathlib.Path(__file__).resolve().parents[1] / "staging.json"
+STAGED = {k: v["pose"] for k, v in json.loads(STAGING.read_text()).items()} if STAGING.exists() else {}
 for j in J:
     w = WIDEN.get(j,100); ts = np.arange(CAL[j]["range_min"]-w, CAL[j]["range_max"]+w+1, 5)
-    g = np.array([grav({**REST, j:t})[j] for t in ts])
+    base = {**REST, **{m: t for m, t in STAGED.get(j, {}).items() if m != j}}   # taught pose, if any
+    if j in STAGED:
+        print(f"{j}: swept from its taught staging pose {base}")
+    g = np.array([grav({**base, j:t})[j] for t in ts])
     # worst case anywhere: random poses of the joints beyond it (and this joint)
     rng = np.random.default_rng(0); worst = 0
     for _ in range(4000):
         p = {k: rng.uniform(CAL[k]["range_min"], CAL[k]["range_max"]) for k in J}
         worst = max(worst, abs(grav(p)[j]))
     i = int(np.argmax(abs(g)))
-    out[j] = dict(sweep_max_nm=float(abs(g).max()), at_tick=int(ts[i]), at_start_nm=float(abs(grav(REST)[j])), worst_nm=worst)
+    out[j] = dict(sweep_max_nm=float(abs(g).max()), at_tick=int(ts[i]), at_start_nm=float(abs(grav(base)[j])), worst_nm=worst)
     print(f"{j:<14} homing sweep: max {abs(g).max():.3f} N.m = {abs(g).max()/NM_PER_LOAD:5.0f}/1000 at tick {ts[i]}"
-          f" | at rest {abs(grav(REST)[j])/NM_PER_LOAD:4.0f} | worst pose anywhere {worst:.3f} N.m = {worst/NM_PER_LOAD:4.0f}/1000")
+          f" | at start {abs(grav(base)[j])/NM_PER_LOAD:4.0f} | worst pose anywhere {worst:.3f} N.m = {worst/NM_PER_LOAD:4.0f}/1000")
     # profile every ~300 ticks
     print("     profile:", " ".join(f"{t}:{abs(v)/NM_PER_LOAD:.0f}" for t,v in list(zip(ts,g))[::60]))

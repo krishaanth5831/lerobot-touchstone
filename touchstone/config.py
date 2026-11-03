@@ -62,6 +62,28 @@ HOMING_TORQUE_LIMIT = {
 }
 TORQUE_LIMIT_CEILING = 400
 
+# ------------------------------------------------------------------ staging
+# Folded at rest, the arm's own links block some sweeps (the wrist cannot roll fully with the
+# arm folded, 2026-11-03). For such a joint the other joints are first moved, one at a time, to
+# a staging pose YOU taught by hand (`touchstone teach --joint X`: pose the rest of the arm so X
+# sweeps end to end touching nothing). The mesh model cannot pick these poses: its convex hulls
+# already "collide" in the folded rest pose. Unstaging runs in reverse before anything is let go.
+STAGING_JSON = Path(__file__).resolve().parents[1] / "staging.json"
+STAGE_ORDER = ["shoulder_lift", "elbow_flex", "wrist_flex", "shoulder_pan", "wrist_roll", "gripper"]
+# Torque cap while a joint MOVES to or from its staging pose (it holds at its old limit
+# otherwise). 1.5 x worst gravity anywhere (scripts/gravity_torque.py) + 40, capped at the
+# ceiling: a collision on the way pushes with at most this, never with the 1000 it holds at.
+STAGE_TORQUE_LIMIT = {
+    "shoulder_lift": 400,   # 1.5 x 294 + 40 = 481, capped: keep the elbow folded while it lifts
+    "elbow_flex": 280,      # 1.5 x 154 + 40
+    "wrist_flex": 100,      # 1.5 x 40 + 40
+    "shoulder_pan": 80,
+    "wrist_roll": 80,
+    "gripper": 80,
+}
+STAGE_STEP_TICKS = 2          # 100 ticks/s ~ 9 deg/s while staging
+STAGE_LEAD_MAX_TICKS = 40     # goal never more than this ahead of a staging joint
+
 # ------------------------------------------------------------------ motion
 CYCLE_HZ = 50                 # one read-decide-write cycle every 20 ms
 STEP_FAST_TICKS = 3           # first touch:  150 ticks/s ~ 13 deg/s
