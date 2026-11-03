@@ -50,6 +50,18 @@ Suggested order after that: `wrist_roll` → `shoulder_pan` → `wrist_flex` →
 → `shoulder_lift`. The last two carry the arm's weight, so watch the first runs closely.
 Use `--end min` / `--end max` to home one end only.
 
+## The whole arm in one command
+
+```bash
+touchstone home-all              # every joint in turn: gripper, wrist_roll, shoulder_pan, wrist_flex, elbow_flex, shoulder_lift
+touchstone home-all --sim        # the same on the simulator
+touchstone home-all --only elbow_flex shoulder_lift
+```
+
+It waits before each joint (ENTER = go, s = skip, q = stop). A joint that is too weak at its
+torque limit is retried one step up its ladder (never above 200/1000); a stall somewhere
+unexpected is never pushed harder. It ends with one merged candidate in `runs/<stamp>_all/`.
+
 ## What one run does
 
 For one joint, each end:

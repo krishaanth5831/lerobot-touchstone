@@ -104,6 +104,57 @@ def cmd_home(args) -> int:
     return 0 if not result.aborted and not result.restore_errors else 3
 
 
+def cmd_home_all(args) -> int:
+    from .sequence import PLAN, run_sequence, table
+    cal = load_calibration(args.calibration)
+    plan = [s for s in PLAN if not args.only or s.joint in args.only]
+    if not args.sim:
+        print("About to home the REAL follower joint by joint:\n")
+        for s in plan:
+            print(f"  {s.joint:<14} torque {'/'.join(map(str, s.torques))}/1000   {s.advice}")
+        print("\nRest the arm folded, torque off, area clear, hand near the power switch.\n"
+              "Before each joint it waits for you: ENTER = go, s = skip that joint, q = stop.\n"
+              "Ctrl-C stops the joint that is moving and ends the sequence; everything is restored.")
+        if input("Type 'all' to start: ").strip() != "all":
+            print("Not confirmed, nothing done.")
+            return 1
+    bus = make_bus(args, cal)
+    last = {"t": -1.0}
+
+    def live(row):
+        if sys.stdout.isatty() and row["t"] - last["t"] >= 0.2:
+            last["t"] = row["t"]
+            print(f"\r  {row['phase']:<16} pos {row['pos']:>5}  goal {row['goal']!s:>5}  load {row['load']:>5}",
+                  end="", flush=True)
+        if row["t"] < last["t"]:      # a new run's clock started again
+            last["t"] = -1.0
+
+    def event(msg):
+        print(("\r" + " " * 70 + "\r" if sys.stdout.isatty() else "") + msg, flush=True)
+
+    def pause(step, tq):
+        if args.sim:
+            return ""
+        return input(f"\nNext: {step.joint} at {tq}/1000 ({step.advice}). ENTER = go, s = skip, q = stop: ")
+
+    def release():
+        input("\nThe arm is holding still. Support it with your hand, then press ENTER to release torque.")
+
+    try:
+        seq = run_sequence(bus, cal, args.runs_dir, plan=plan, mode="sim" if args.sim else "real",
+                           pause=pause, on_event=event, on_sample=live,
+                           confirm_release=None if args.sim else release)
+    finally:
+        bus.close()
+    print("\n" + "=" * 60 + "\n" + table(seq, plan))
+    if seq.stopped:
+        print(f"\nSTOPPED EARLY: {seq.stopped}")
+    print(f"\nmerged candidate: {seq.out_dir / 'candidate_calibration.json'}  (NOT applied)")
+    print(report.diff(cal, seq.candidate))
+    bad = seq.stopped or any(r.restore_errors for r, _ in seq.runs)
+    return 3 if bad else 0
+
+
 def cmd_plot(args) -> int:
     import csv
 
@@ -205,6 +256,12 @@ def main(argv=None) -> int:
                     help="how far from the calibrated end a stop may be and still count")
     sp.add_argument("--runs-dir", type=Path, default=config.RUNS_DIR)
     sp.set_defaults(fn=cmd_home)
+
+    sp = sub.add_parser("home-all", help="home every joint in turn, light joints first, one merged candidate")
+    sim_flags(sp)
+    sp.add_argument("--only", nargs="+", choices=config.JOINTS, help="just these joints, in the safe order")
+    sp.add_argument("--runs-dir", type=Path, default=config.RUNS_DIR)
+    sp.set_defaults(fn=cmd_home_all)
 
     sp = sub.add_parser("sync", help="write one joint's offset + limits from the JSON into its motor (torque off)")
     sim_flags(sp)
