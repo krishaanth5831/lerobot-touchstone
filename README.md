@@ -6,7 +6,8 @@ where they are, and writes a calibration candidate. You no longer move it by han
 A *touchstone* is the reference you test against. Here the arm's own end stops are the
 reference, found by touching them.
 
-Status: **simulation-tested only (37 tests). Never run on the real arm yet.** It sits in
+Status: **44 simulator tests. First real-arm runs 2026-11-03:** gripper and wrist_roll home `ok` at
+torque limit 80; shoulder_pan in progress; wrist_flex, elbow_flex and shoulder_lift not run yet. It sits in
 its own repo so it can be tested in isolation before it goes anywhere near lerobot, B.L.U.S.H
 or torque-tactile-sensing.
 
@@ -32,6 +33,9 @@ touchstone probe                              # 3. must show no "motor differs f
 touchstone home --joint gripper               # 4. the real thing (asks you to type 'gripper' first)
 touchstone plot runs/<run>
 ```
+
+If `probe` says `motor differs from json` for a joint, `touchstone sync --joint <joint>` writes
+that joint's offset and limits from the JSON back into the motor, torque off, nothing moves.
 
 Step 2 is the first time any of this talks to real servos. It checks the register writes,
 the EEPROM widen-and-restore round trip, that the low torque limit really is in effect after

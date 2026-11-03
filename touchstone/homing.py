@@ -106,6 +106,8 @@ class Homer:
         self._cycle = 0
         self._next_tick = 0.0
         self._dir = 0                             # direction of the current motion, 0 = holding
+        self._hot = 0                             # temperature readings in a row over the abort line
+        self._bad_volt = 0
 
     # ================================================================== public
     def run(self, ends: tuple[str, ...] = ("min", "max")) -> JointResult:
@@ -351,7 +353,10 @@ class Homer:
                 lead = d * (self.goal - s.pos)
                 if lead >= config.STALL_MIN_LEAD_TICKS:
                     return Touch("stop", int(statistics.median(p for _, p in list(hist)[-5:])), s.t, peak)
-                if self.goal == search and abs(search - s.pos) <= config.SOFT_LIMIT_TOL_TICKS:
+                # Goal parked on the search limit and the joint stopped short of it with too
+                # little lead to call a stall: friction, not a stop. A stiff joint (shoulder_pan
+                # on the real arm) parks up to ~STALL_MIN_LEAD_TICKS short, so no distance test.
+                if self.goal == search:
                     return Touch("soft_limit", s.pos, s.t, peak)
             if s.t - t0 > timeout:
                 raise Aborted(f"{phase}: no stall and no limit after {timeout:.1f} s (at {s.pos}, goal {self.goal})")
@@ -433,10 +438,15 @@ class Homer:
         if self._cycle % config.TEMP_VOLT_EVERY == 0:
             temp, volt = b.read("Present_Temperature", j), b.read("Present_Voltage", j) / 10
             row.update(temp=temp, volt=volt)
-            if temp >= config.TEMP_ABORT_C:
-                raise Aborted(f"{j} at {temp} C")
-            if not config.VOLTAGE_MIN_V <= volt <= config.VOLTAGE_MAX_V:
-                raise Aborted(f"supply at {volt:.1f} V")
+            # One bad sample is a bus glitch, not heat: on the real arm a steady 33 C wrist_roll
+            # read 41, 43 and then 58 in single samples. Real heating takes tens of seconds, so
+            # only GLITCH_SAMPLES readings in a row (0.6 s) count.
+            self._hot = self._hot + 1 if temp >= config.TEMP_ABORT_C else 0
+            self._bad_volt = self._bad_volt + 1 if not config.VOLTAGE_MIN_V <= volt <= config.VOLTAGE_MAX_V else 0
+            if self._hot >= config.GLITCH_SAMPLES:
+                raise Aborted(f"{j} at {temp} C ({self._hot} readings in a row)")
+            if self._bad_volt >= config.GLITCH_SAMPLES:
+                raise Aborted(f"supply at {volt:.1f} V ({self._bad_volt} readings in a row)")
             if self.hold_others:
                 for m in self.others:
                     st = b.read("Status", m)

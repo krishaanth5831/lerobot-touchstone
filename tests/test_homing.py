@@ -347,3 +347,23 @@ def test_gravity_runaway_aborts_and_full_torque_catches_it():
     J.reg["Torque_Enable"] = 1                 # what the arm does between restore and release
     bus.sleep(1.0)
     assert abs(J.pos - caught_at) < 40          # held by full torque, not falling
+
+
+def test_single_temperature_glitch_does_not_abort():
+    # real arm, 2026-11-03: wrist_roll steady at 33 C read 58 C once and the run aborted
+    bus = sim()
+    for t in (1.0, 3.0, 5.0):
+        bus.inject(t, "gripper", "temp_glitch", 58)
+    _, res = home(bus, "gripper")
+    assert res.aborted is None
+    assert [e.verdict for e in res.ends] == ["ok", "ok"]
+
+
+def test_stiff_joint_parked_short_of_the_search_limit_is_no_stop_not_a_timeout():
+    # real arm, 2026-11-03: shoulder_pan ran freely to its search limit 732 and parked at 739.
+    # Lead 7 was too small to call a stall (>= 8) and 7 ticks too far to call the limit (<= 6),
+    # so it hung until the approach timeout aborted the whole run. 0.19 N.m parks it ~7 ticks short.
+    bus = sim(stops={**STOPS, "shoulder_pan": (600.0, 3400.0)}, friction_nm={"shoulder_pan": 0.19})
+    _, res = home(bus, "shoulder_pan")
+    assert res.aborted is None
+    assert [e.verdict for e in res.ends] == ["no_stop", "no_stop"]

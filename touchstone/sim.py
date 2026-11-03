@@ -39,8 +39,10 @@ READ_ONLY = {"Present_Position", "Present_Load", "Present_Voltage", "Present_Tem
 
 
 class SimJoint:
-    def __init__(self, name: str, cal: dict, stops: tuple[float, float], pos: float, gravity_nm=0.0):
+    def __init__(self, name: str, cal: dict, stops: tuple[float, float], pos: float, gravity_nm=0.0,
+                 friction_nm=FRICTION_NM):
         """gravity_nm: N.m in the +tick direction, a constant or a function of position."""
+        self.friction_nm = friction_nm
         self.name = name
         self.stops = stops
         self.pos = float(pos)
@@ -83,7 +85,7 @@ class SimJoint:
         if self.pos > hi:
             ext -= STOP_STIFFNESS_NM * (self.pos - hi)
         net = drive + ext
-        excess = (1 if net > 0 else -1) * max(abs(net) - FRICTION_NM, 0.0)
+        excess = (1 if net > 0 else -1) * max(abs(net) - self.friction_nm, 0.0)
         v = excess / (self.K * TIME_CONSTANT)
         if r["Goal_Velocity"] > 0:
             v = max(-r["Goal_Velocity"], min(r["Goal_Velocity"], v))
@@ -103,7 +105,7 @@ class SimBus:
 
     def __init__(self, calibration: dict[str, dict], stops: dict[str, tuple[float, float]] | None = None,
                  pose: dict[str, float] | None = None, gravity_nm: dict[str, float] | None = None,
-                 seed: int = 0, realtime: bool = False):
+                 seed: int = 0, realtime: bool = False, friction_nm: dict[str, float] | None = None):
         self.rng = random.Random(seed)
         self.calibration = calibration
         self.joints: dict[str, SimJoint] = {}
@@ -114,7 +116,8 @@ class SimBus:
             else:  # hand calibration records the stops a few ticks short of where they really are
                 st = (c["range_min"] - self.rng.uniform(2, 15), c["range_max"] + self.rng.uniform(2, 15))
             p = (pose or {}).get(j, (c["range_min"] + c["range_max"]) / 2)
-            self.joints[j] = SimJoint(j, c, st, p, (gravity_nm or {}).get(j, 0.0))
+            self.joints[j] = SimJoint(j, c, st, p, (gravity_nm or {}).get(j, 0.0),
+                                      (friction_nm or {}).get(j, FRICTION_NM))
         self.t = 0.0
         self.realtime = realtime
         self.writes: list[tuple[float, str, str, int]] = []
@@ -129,6 +132,9 @@ class SimBus:
         if reg == "Present_Load":
             return int(round(J.drive_nm / NM_PER_LOAD))
         if reg == "Present_Temperature":
+            if getattr(J, "temp_glitch", None) is not None:      # one bad sample, as seen on the real bus
+                v, J.temp_glitch = J.temp_glitch, None
+                return int(v)
             return int(J.temp)
         if reg == "Present_Current":
             return int(abs(J.drive_nm) / NM_PER_LOAD // 150)
@@ -167,6 +173,8 @@ class SimBus:
                 _, motor, kind, value = f
                 if kind == "status":
                     self.joints[motor].reg["Status"] |= value
+                elif kind == "temp_glitch":
+                    self.joints[motor].temp_glitch = value
                 elif kind == "temp":
                     self.joints[motor].temp = value
                 elif kind == "voltage":

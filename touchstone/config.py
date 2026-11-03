@@ -84,8 +84,6 @@ STOP_INSET_TICKS = 5
 # WIDEN_TICKS outside the old range can be reached. Two EEPROM registers, written twice.
 WIDEN_TICKS = 100
 WIDEN_CEILING = 200
-# The joint parked within this of the (widened) limit with no stall = "no stop found here".
-SOFT_LIMIT_TOL_TICKS = 6
 
 # ------------------------------------------------------------------ abort conditions
 VOLTAGE_MIN_V = 10.0          # follower PSU reads ~12.0 V; the leader ~4.6 V (refused)
@@ -108,6 +106,7 @@ SAG_TICKS = 10
 # the full Torque_Limit back to catch it.
 OVERRUN_TICKS = 40       # the joint must start within the calibrated range +- this
 TEMP_VOLT_EVERY = 10          # read temperature and voltage every N cycles (5 Hz)
+GLITCH_SAMPLES = 3            # temperature/voltage must be out of range this many reads in a row
 APPROACH_TIMEOUT_EXTRA_S = 5.0
 
 STATUS_BITS = {0: "voltage", 1: "encoder", 2: "overheat", 3: "overcurrent", 4: "bit4", 5: "overload"}
