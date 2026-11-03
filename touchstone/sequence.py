@@ -2,11 +2,12 @@
 
 Each joint is an ordinary single-joint run (same Homer, same guards, its own runs/ folder),
 in a safe order: light joints first, the two that carry the arm's weight last. The per-joint
-settings are what worked on the real arm on 2026-11-03.
+settings are what worked on the real arm on 2026-11-03, and the torque ladders start at the
+gravity-based limits in config.HOMING_TORQUE_LIMIT.
 
 A joint that is simply too weak at its torque limit (cannot hold itself, slides back, or
-could not move off its start pose) is retried at the next step of its ladder, never above
-200/1000. Its failed ends are retried, not the ok ones. Anything else that goes wrong (a
+could not move off its start pose) is retried at the next step of its ladder (top: 280/1000
+for the elbow, 200 for the rest). Its failed ends are retried, not the ok ones. Anything else that goes wrong (a
 real abort, a restore error, Ctrl-C) stops the whole sequence. A stall somewhere unexpected
 (`suspect`) is NOT retried harder: pushing harder into an obstacle is what we must not do.
 
@@ -36,9 +37,9 @@ PLAN = [
     Step("gripper", [80], advice="nothing between the jaws"),
     Step("wrist_roll", [80], widen=120, tolerance=120, advice="watch the cable winding round the wrist"),
     Step("shoulder_pan", [80], widen=150, tolerance=150, advice="the base sweeps ~220 deg: clear the path"),
-    Step("wrist_flex", [120, 150], advice="jaw clear of the table and the forearm"),
-    Step("elbow_flex", [120, 150, 200], advice="hand under the forearm"),
-    Step("shoulder_lift", [120, 150, 200],
+    Step("wrist_flex", [100, 120], advice="jaw clear of the table and the forearm"),
+    Step("elbow_flex", [230, 280], advice="hand under the forearm"),
+    Step("shoulder_lift", [100, 150, 200],
          advice="hand under the upper arm the whole time; Ctrl-C if it falls forward past vertical"),
 ]
 

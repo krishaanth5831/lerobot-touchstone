@@ -30,16 +30,35 @@ RUNS_DIR = Path(__file__).resolve().parents[1] / "runs"
 
 # ------------------------------------------------------------------ torque
 # Homing torque limit per joint, 0..1000 = 0..100 % of stall torque (~2.94 N.m at 12 V).
-# Deliberately low: enough to beat gear friction (~0.05 N.m = 2 %) and the joint's own
-# load, far below what strips a plastic gear. If a joint stalls before its stop the run
-# says "suspect" and you raise it with --torque-limit, never past TORQUE_LIMIT_CEILING.
+#
+#   limit >= 1.5 x (peak gravity torque along the homing sweep) + 40 friction, rounded up
+#
+# Gravity from scripts/gravity_torque.py: the MJCF link masses, each joint swept over its
+# window with the rest of the arm folded as it rests. Friction 40: the base parked 7 ticks
+# short of its goal at load 40 without moving (real arm, 2026-11-03), the stickiest joint
+# measured; gear friction alone is ~0.05 N.m = 17 (torque-tactile-sensing). x1.5 covers the
+# model's masses and the servo's real torque at 11.9 V. Checked against the arm: the folded
+# elbow needs 120 for gravity alone and could not unfold at 80; the light joints homed ok at 80.
+#
+#   joint          gravity peak   at rest   -> limit   on the arm 2026-11-03
+#   gripper              1           0         80      ok at 80
+#   wrist_roll           0           0         80      ok at 80
+#   shoulder_pan         0           0         80      stops found at 80 (unrepeatable: a since-fixed bug)
+#   wrist_flex          40           6        100      ok at 120; at 80 stalled at 2876 where gravity
+#                                                       is only ~8, so that was an obstacle, not weakness
+#   elbow_flex         123         120        230      stuck at its start at 80
+#   shoulder_lift       32          20         90      not run (with the elbow folded the arm's weight
+#                                                       sits close to the shoulder; extended it is 294)
+#
+# If a joint stalls before its stop the run says "suspect"; raise it with --torque-limit,
+# never past TORQUE_LIMIT_CEILING.
 HOMING_TORQUE_LIMIT = {
-    "shoulder_pan": 200,
-    "shoulder_lift": 300,   # carries the whole arm against gravity
-    "elbow_flex": 250,
-    "wrist_flex": 200,
-    "wrist_roll": 150,
-    "gripper": 150,
+    "shoulder_pan": 80,
+    "shoulder_lift": 100,
+    "elbow_flex": 230,
+    "wrist_flex": 100,
+    "wrist_roll": 80,
+    "gripper": 80,
 }
 TORQUE_LIMIT_CEILING = 400
 

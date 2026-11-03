@@ -364,7 +364,7 @@ def test_stiff_joint_parked_short_of_the_search_limit_is_no_stop_not_a_timeout()
     # Lead 7 was too small to call a stall (>= 8) and 7 ticks too far to call the limit (<= 6),
     # so it hung until the approach timeout aborted the whole run. 0.19 N.m parks it ~7 ticks short.
     bus = sim(stops={**STOPS, "shoulder_pan": (600.0, 3400.0)}, friction_nm={"shoulder_pan": 0.19})
-    _, res = home(bus, "shoulder_pan")
+    _, res = home(bus, "shoulder_pan", torque_limit=200)   # the sim needs force to move past 0.19 N.m
     assert res.aborted is None
     assert [e.verdict for e in res.ends] == ["no_stop", "no_stop"]
 

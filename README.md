@@ -59,7 +59,7 @@ touchstone home-all --only elbow_flex shoulder_lift
 ```
 
 It waits before each joint (ENTER = go, s = skip, q = stop). A joint that is too weak at its
-torque limit is retried one step up its ladder (never above 200/1000); a stall somewhere
+torque limit is retried one step up its ladder (top: 280/1000 for the elbow, 200 for the rest); a stall somewhere
 unexpected is never pushed harder. It ends with one merged candidate in `runs/<stamp>_all/`.
 
 ## What one run does
