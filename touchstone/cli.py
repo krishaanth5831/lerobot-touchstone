@@ -156,6 +156,26 @@ def cmd_diff(args) -> int:
     return 0
 
 
+def cmd_sync(args) -> int:
+    from .sync import SyncRefused, sync_joint
+    cal = load_calibration(args.calibration)
+    bus = make_bus(args, cal)
+
+    def confirm(msg):
+        print(msg)
+        return args.sim or input(f"Type '{args.joint}' to write: ").strip() == args.joint
+
+    try:
+        sync_joint(bus, cal, args.joint, confirm=confirm)
+    except SyncRefused as e:
+        print(f"REFUSED: {e}")
+        return 2
+    finally:
+        bus.close()
+    print("Now run `touchstone probe`: this row must no longer say 'motor differs from json'.")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="touchstone", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -185,6 +205,11 @@ def main(argv=None) -> int:
                     help="how far from the calibrated end a stop may be and still count")
     sp.add_argument("--runs-dir", type=Path, default=config.RUNS_DIR)
     sp.set_defaults(fn=cmd_home)
+
+    sp = sub.add_parser("sync", help="write one joint's offset + limits from the JSON into its motor (torque off)")
+    sim_flags(sp)
+    sp.add_argument("--joint", required=True, choices=config.JOINTS)
+    sp.set_defaults(fn=cmd_sync)
 
     sp = sub.add_parser("plot", help="open a window with a run's trace")
     sp.add_argument("run")
