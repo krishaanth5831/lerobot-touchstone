@@ -116,3 +116,25 @@ def test_teach_then_home_uses_the_taught_pose(tmp_path, monkeypatch, capsys):
     assert cli.main(cal_args + ["home", "--joint", "wrist_roll", "--sim", "--end", "none",
                                 "--runs-dir", str(tmp_path)]) == 0
     assert "staging pose from" in capsys.readouterr().out
+
+
+def test_homed_joint_holds_at_full_torque_while_the_arm_stages():
+    bus = sim()
+    limits = []
+    h = homer(bus)
+    h.on_sample = lambda row: row["phase"].startswith("stage") and limits.append(
+        bus.joints["wrist_roll"].reg["Torque_Limit"])
+    res = h.run(("min",))
+    assert res.aborted is None and limits and set(limits) == {1000}
+
+
+def test_staged_joint_too_weak_to_hold_unstages_and_climbs_its_ladder(tmp_path):
+    from touchstone.sequence import Step, run_sequence
+    bus = sim(gravity_nm={"elbow_flex": 0.45})          # 120/1000 + friction = 0.40 N.m cannot hold it
+    rest = rest_of(bus)
+    seq = run_sequence(bus, CAL, tmp_path, plan=[Step("elbow_flex", [120, 150, 200])], mode="sim",
+                       on_event=lambda m: None, stages={"elbow_flex": {"shoulder_lift": 2300}})
+    first = seq.runs[0][0]
+    assert first.torque_limit == 120 and "cannot hold itself" in (first.aborted or "")
+    assert len(seq.runs) >= 2 and seq.stopped is None
+    assert abs(bus.joints["shoulder_lift"].pos - rest["shoulder_lift"]) <= 15   # arrival tolerance under load

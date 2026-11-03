@@ -64,12 +64,19 @@ def cmd_probe(args) -> int:
 def cmd_home(args) -> int:
     cal = load_calibration(args.calibration)
     ends = {"both": ("min", "max"), "none": ()}.get(args.end, (args.end,))
+    stage = load_stage(args, args.joint)
     if not args.sim:
         what = f"move the REAL follower's {args.joint} into its {' and '.join(ends)} stop(s)" if ends else \
-            f"torque the REAL follower's {args.joint} at the homing limit and hold it (no motion)"
+            f"torque the REAL follower's {args.joint} at the homing limit and hold it"
+        if not ends:
+            what += " (it does not move" + ("; the staging joints below DO" if stage else ", nothing moves") + ")"
         print(f"About to {what}, "
-              f"torque limit {args.torque_limit or config.HOMING_TORQUE_LIMIT[args.joint]}/1000.\n"
-              "Clear the area around the arm, keep a hand near the power switch. Ctrl-C stops it at any time.")
+              f"torque limit {args.torque_limit or config.HOMING_TORQUE_LIMIT[args.joint]}/1000.")
+        if stage:
+            print("FIRST these joints move, one at a time, to the staging pose you taught, and back after:")
+            for m in [m for m in config.STAGE_ORDER if m in stage]:
+                print(f"  {m:<14} -> {stage[m]:>5}   (torque cap {config.STAGE_TORQUE_LIMIT[m]}/1000 while moving)")
+        print("Clear the area around the arm, keep a hand near the power switch. Ctrl-C stops it at any time.")
         if input(f"Type '{args.joint}' to start: ").strip() != args.joint:
             print("Not confirmed, nothing done.")
             return 1
@@ -92,7 +99,6 @@ def cmd_home(args) -> int:
         def release():
             input("\nThe arm is holding still. Support it with your hand, then press ENTER to release torque.")
 
-        stage = load_stage(args, args.joint)
         if stage:
             event(f"staging pose from {config.STAGING_JSON.name}: " + ", ".join(f"{m} {t}" for m, t in stage.items()))
         homer = Homer(bus, cal, args.joint, torque_limit=args.torque_limit, widen=args.widen,
@@ -123,6 +129,10 @@ def cmd_home_all(args) -> int:
         print("About to home the REAL follower joint by joint:\n")
         for s in plan:
             print(f"  {s.joint:<14} torque {'/'.join(map(str, s.torques))}/1000   {s.advice}")
+            st = load_stage(args, s.joint)
+            if st:
+                print(f"  {'':<14} STAGES first: " + ", ".join(
+                    f"{m} -> {st[m]} (cap {config.STAGE_TORQUE_LIMIT[m]})" for m in config.STAGE_ORDER if m in st))
         print("\nRest the arm folded, torque off, area clear, hand near the power switch.\n"
               "Before each joint it waits for you: ENTER = go, s = skip that joint, q = stop.\n"
               "Ctrl-C stops the joint that is moving and ends the sequence; everything is restored.")

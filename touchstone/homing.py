@@ -124,11 +124,24 @@ class Homer:
             res.start_pos = self._read_pos()
             self._stage_in()
             res.staged = dict(self.stage)
-            self._hold_check()                             # in the pose it will sweep from
+            if self.stage:
+                self._set_homed_limit(self.torque_limit)   # now the homing limit
+            try:
+                self._hold_check()                         # in the pose it will sweep from
+            except Aborted:
+                # Too weak to hold, before any sweep: the homed joint is still where it started.
+                # Give it its full torque back and unstage normally, so home-all can retry one
+                # rung up its ladder from rest. Any other abort while staged holds everything.
+                if self.stage:
+                    self._hold_homed_firm(snapshot)
+                    self._stage_out()
+                raise
             for end in ends:
                 res.ends.append(self._home_end(end))
             self._event(f"returning to the start pose ({res.start_pos})")
-            self._move_to(res.start_pos, config.STEP_MOVE_TICKS, "return")
+            self._return_to(res.start_pos)
+            if self.stage:
+                self._hold_homed_firm(snapshot)
             self._stage_out()                              # back to rest BEFORE anything is let go
         except BaseException as e:  # noqa: BLE001 - Ctrl-C included: always clean up, then report
             if isinstance(e, Aborted):
@@ -143,6 +156,34 @@ class Homer:
         return res
 
     # ================================================================== staging
+    def _return_to(self, start: int) -> None:
+        """Back to the start along the path it just swept, so known clear. If gravity helped it out
+        and the homing limit cannot bring it back (a barely strong enough joint), retry once at up
+        to TORQUE_LIMIT_CEILING: the goal lead cap still bounds the push."""
+        try:
+            self._move_to(start, config.STEP_MOVE_TICKS, "return")
+        except Aborted as e:
+            if "blocked" not in str(e) and "did not reach" not in str(e):
+                raise
+            lim = min(self.snapshot["homed"]["Torque_Limit"], config.TORQUE_LIMIT_CEILING)
+            if lim <= self.torque_limit:
+                raise
+            self._event(f"return: too weak at {self.torque_limit}/1000 ({e}); retrying at {lim}/1000")
+            self._set_homed_limit(lim)
+            self._move_to(start, config.STEP_MOVE_TICKS, "return")
+
+    def _set_homed_limit(self, lim: int) -> None:
+        self.bus.write("Torque_Limit", self.joint, lim)
+        got = self.bus.read("Torque_Limit", self.joint)
+        if got != lim:
+            raise Aborted(f"{self.joint}: Torque_Limit reads {got}, expected {lim}")
+
+    def _hold_homed_firm(self, snapshot: dict) -> None:
+        """Hold the homed joint where it is at its old (full) limit, for unstaging around it."""
+        self.goal = self._read_pos()
+        self.bus.write("Goal_Position", self.joint, self.goal)
+        self._set_homed_limit(snapshot["homed"]["Torque_Limit"])
+
     def _stage_in(self) -> None:
         for m in config.STAGE_ORDER:
             if m in self.stage:
@@ -291,7 +332,10 @@ class Homer:
                 raise Aborted(f"widened limits read back as {got}, expected {(lo, hi)}")
             self._event(f"firmware limits widened to {lo}..{hi} for this run")
         self.limits = (lo, hi)
-        b.write("Torque_Limit", j, self.torque_limit)
+        # While other joints stage around it, the homed joint holds at its old limit (full), not
+        # the homing limit: the arm's weight on it changes as they move. Lowered after staging.
+        first = self.snapshot["homed"]["Torque_Limit"] if self.stage else self.torque_limit
+        b.write("Torque_Limit", j, first)
         b.write("Acceleration", j, config.ACCELERATION_CAP)
         b.write("Goal_Velocity", j, config.GOAL_VELOCITY_CAP)
         self.goal = b.read("Present_Position", j)
@@ -299,7 +343,7 @@ class Homer:
         b.torque_on(j)
         # Trust nothing: the force cap is only real if the servo still holds these after the
         # torque-enable edge. Checked before the joint is asked to do anything.
-        want = {"Torque_Limit": self.torque_limit, "Acceleration": config.ACCELERATION_CAP,
+        want = {"Torque_Limit": first, "Acceleration": config.ACCELERATION_CAP,
                 "Goal_Velocity": config.GOAL_VELOCITY_CAP}
         got = {r: b.read(r, j) for r in want}
         if got != want:
