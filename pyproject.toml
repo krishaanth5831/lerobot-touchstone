@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot-touchstone"
+version = "0.1.0"
+description = "Automatic hard-stop homing for the SO-101 follower: the arm finds its own range"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+arm = ["lerobot[feetech]"]
+plot = ["matplotlib"]
+
+[project.scripts]
+touchstone = "touchstone.cli:main"
+
+[tool.setuptools]
+packages = ["touchstone"]
