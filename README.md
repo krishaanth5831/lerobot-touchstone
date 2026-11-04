@@ -6,10 +6,20 @@ where they are, and writes a calibration candidate. You no longer move it by han
 A *touchstone* is the reference you test against. Here the arm's own end stops are the
 reference, found by touching them.
 
-Status: **44 simulator tests. First real-arm runs 2026-11-03:** gripper and wrist_roll home `ok` at
-torque limit 80; shoulder_pan in progress; wrist_flex, elbow_flex and shoulder_lift not run yet. It sits in
-its own repo so it can be tested in isolation before it goes anywhere near lerobot, B.L.U.S.H
-or torque-tactile-sensing.
+Status: **64 simulator tests; whole-arm runs on the real follower 2026-11-04** (`home-all`):
+
+| joint | min | max | notes |
+|---|---|---|---|
+| gripper | ok 2015 | ok 3470 | 80/1000 |
+| wrist_roll | ok 146 | ok 3955 | 80/1000; blocked at 2699 in one run from the folded pose |
+| shoulder_pan | unrepeatable (685 / 676) | ok 3322 | 80/1000 |
+| wrist_flex | ok 915 | suspect 2936 | 2936-2942 in every run: a real stop or the jaw on the arm, unresolved |
+| elbow_flex | ok 917 | ok 3141 | 230/1000, after the lead-cap fix |
+| shoulder_lift | no_stop (below 725) | suspect 992 | the folded arm hits itself / the table when the shoulder lifts |
+
+Not applied to any calibration yet. Open: shoulder_lift needs the other joints moved out of the
+way first, chosen without a hand-taught pose (the self-collision model in `touchstone/collide.py`
+is 10-30 mm off near the fold, so it cannot pick that pose yet).
 
 ## Start here: watch it in the simulator
 
