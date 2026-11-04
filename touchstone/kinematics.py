@@ -50,6 +50,11 @@ class Kinematics:
         self._set(pose)
         return {j: abs(float(self.d.qfrc_bias[self.dadr[j]])) / NM_PER_LOAD for j in config.JOINTS}
 
+    def pan_axis_xy(self) -> np.ndarray:
+        """Where the shoulder_pan axis meets the table plane (x, y), m."""
+        self._set({})
+        return self.d.xpos[self.m.body("shoulder").id][:2].copy()
+
     def corners(self, pose: dict[str, float]) -> dict[str, np.ndarray]:
         """World positions (m) of the 8 corners of each moving link's collision box (8 x 3)."""
         self._set(pose)

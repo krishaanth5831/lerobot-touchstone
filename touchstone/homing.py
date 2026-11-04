@@ -56,6 +56,7 @@ class EndResult:
     verdict: str = ""
     note: str = ""
     tests: list = field(default_factory=list)   # test moves: {"joint", "to", "stall_after", "outcome"}
+    untested: list = field(default_factory=list)  # link pairs no test move could shift
 
 
 @dataclass
@@ -90,7 +91,7 @@ class Homer:
                  on_sample: Callable[[dict], None] | None = None,
                  confirm_release: Callable[[], None] | None = None,
                  stage: dict[str, int] | None = None, kin=None,
-                 gravity_fn: Callable[[dict], dict] | None = None):
+                 gravity_fn: Callable[[dict], dict] | None = None, verify_all: bool = False):
         if joint not in config.JOINTS:
             raise Refused(f"unknown joint {joint!r}; choose from {config.JOINTS}")
         self.bus = bus
@@ -121,6 +122,11 @@ class Homer:
         self.kin = kin
         self.gravity_fn = gravity_fn or (kin.gravity_load if kin is not None else None)
         self._history: list[tuple[str, int, int, int]] = []  # (other joint, its tick before, homed tick, cap)
+        self.verify_all = verify_all          # test every stall, even one where the stop should be
+        self._force = False                   # test this end even if near (a short span asked for it)
+        self._search = None                   # the current end's search limit
+        self._d = 0
+        self._too_heavy: list[str] = []       # test moves dropped: they'd leave the homed joint too weak
         self._hot = 0                             # temperature readings in a row over the abort line
         self._bad_volt = 0
 
@@ -149,6 +155,14 @@ class Homer:
             for end in ends:
                 res.ends.append(self._home_end(end))
             res.span_note = self._span_note(res)
+            if "short" in res.span_note and self.kin is not None:
+                for i, e in enumerate(res.ends):
+                    if not e.tests:
+                        self._event(f"{res.span_note}: testing the {e.end} end, which was not tested")
+                        self._force = True
+                        res.ends[i] = self._home_end(e.end)
+                        self._force = False
+                res.span_note = self._span_note(res)
             self._event(f"returning to the start pose ({res.start_pos})")
             self._return_to(res.start_pos)
             if self.stage:
@@ -475,6 +489,7 @@ class Homer:
         p0 = self._read_pos()
         self._event(f"{end}: touch 1 (fast) toward {expected}, search limit {search}")
         anchor, uncovered, tried, n_same = None, None, set(), 0
+        self._search, self._d, self._too_heavy = search, d, []
         retouch = True
         while True:
             if not retouch:                                 # a worse test move was just undone:
@@ -493,7 +508,7 @@ class Homer:
                 r.verdict, r.note = "no_stop", f"reached the search limit {search} without stalling"
                 return
             p = t1.position
-            near = abs(p - expected) <= self.tolerance
+            near = abs(p - expected) <= self.tolerance and not (self.verify_all or self._force)
             # Gravity can only explain a stall away from the stop: AT a real stop it stalls anyway.
             weak = None if near else self._weakness(p)
             if weak:
@@ -533,21 +548,23 @@ class Homer:
                 anchor, uncovered = p, self._coverable(p)
                 self._event(f"{end}: stalled at {p} ({p - expected:+d} vs calibration): testing whether "
                             "it is the real stop or something in the way")
-            if n_same and (not uncovered or n_same >= 2):
-                break                                       # the same stop whatever the pose: real
-            if len(r.tests) >= config.MAX_PERTURBATIONS:
-                r.verdict, r.stop = "blocked", anchor
-                r.note = (f"stalled at {anchor} and could not tell or clear it in {len(r.tests)} test moves "
-                          f"({anchor - expected:+d} vs calibration)")
-                self._backoff(p, d, end)
-                return
-            cand = self._choose_test(p, uncovered, tried)
+            if n_same and not uncovered:
+                break                                       # every pair that can move, moved: real stop
+            cand = None if len(r.tests) >= config.MAX_PERTURBATIONS else self._choose_test(p, uncovered, tried)
             if cand is None:
-                if n_same:
-                    break                                   # every possible move tried: same stop
-                r.verdict, r.stop = "blocked", anchor
-                r.note = f"stalled at {anchor}; no other joint can move to test it"
+                if n_same:                                  # out of moves, and every test said "same"
+                    r.untested = sorted("-".join(x) for x in uncovered)
+                    break
                 self._backoff(p, d, end)
+                r.stop = anchor
+                if self._too_heavy:
+                    r.verdict = "weak"
+                    r.note = (f"stalled at {anchor}; the moves that might clear it ({', '.join(sorted(set(self._too_heavy)))}) "
+                              f"would leave it too heavy for {self.torque_limit}/1000: too weak, not blocked")
+                else:
+                    r.verdict = "blocked"
+                    r.note = (f"stalled at {anchor} ({anchor - expected:+d} vs calibration) and could not tell or "
+                              f"clear it in {len(r.tests)} test moves")
                 return
             self._run_test(r, cand, tried, p, d, end)
 
@@ -582,6 +599,8 @@ class Homer:
                 r.note += f"; it was blocked until {', '.join(cleared)} moved out of the way"
             if same:
                 r.note += f"; the same stop under {1 + same} different poses"
+            if r.untested:
+                r.note += f" (could not test: {', '.join(r.untested)})"
         elif abs(stop - expected) > self.tolerance:
             r.verdict, r.note = "suspect", f"{stop - expected:+d} from the calibrated end"
         else:
@@ -633,7 +652,10 @@ class Homer:
             if b == "table":
                 shift = float(np.mean(np.abs(A1[:, 2] - A0[:, 2])))        # only height matters
             elif b == "base":
-                shift = float(np.mean(np.linalg.norm(A1 - A0, axis=1)))
+                # the base may be round about the pan axis: turning about it changes nothing there
+                ax = self.kin.pan_axis_xy()
+                r0, r1 = np.linalg.norm(A0[:, :2] - ax, axis=1), np.linalg.norm(A1[:, :2] - ax, axis=1)
+                shift = float(np.mean(np.abs(A1[:, 2] - A0[:, 2]) + np.abs(r1 - r0)))
             else:
                 c0, c1 = before[b].mean(0), after[b].mean(0)
                 shift = float(np.mean(np.linalg.norm((A1 - c1) - (A0 - c0), axis=1)))
@@ -660,6 +682,12 @@ class Homer:
                 cap = int(min(config.TORQUE_LIMIT_CEILING, max(80, round(config.WEAK_FACTOR * g + config.WEAK_FRICTION))))
                 if config.WEAK_FACTOR * g + config.WEAK_FRICTION > config.TORQUE_LIMIT_CEILING:
                     continue
+                # the homed joint must still carry itself over the rest of its sweep in the new pose
+                rest = [p + f * (self._search - p) for f in (0, .2, .4, .6, .8, 1)] if self._search is not None else [p]
+                gj = max(self.gravity_fn({**pose, m: target, self.joint: t})[self.joint] for t in rest)
+                if config.WEAK_FACTOR * gj + config.WEAK_FRICTION > self.torque_limit:
+                    self._too_heavy.append(m)
+                    continue
                 out.append((m, target, self._moved_pairs(before, after), cap))
         return out
 
@@ -685,6 +713,10 @@ class Homer:
         m, target, pairs, cap = cand
         tried.add((m, target))
         self._backoff_far(p, d)
+        now = self._read_pos()
+        if d * (p - now) < config.BACKOFF_TICKS:          # still pressed against it: moving another
+            raise Aborted(f"{self.joint} could not back off from {p} (at {now}) before a test move: "
+                          "held where it is")              # joint now could push the two together
         self._event(f"{end}: test move: {m} {self.bus.read('Present_Position', m)} -> {target} "
                     f"(cap {cap}/1000), then touch again")
         r.tests.append({"joint": m, "to": target, "moves_pairs": sorted(pairs), "cap": cap})
@@ -704,8 +736,13 @@ class Homer:
         self._set_homed_limit(self.torque_limit)
 
     def _undo_last(self) -> None:
-        m, frm, jpos, cap = self._history.pop()
+        m, frm, jpos, cap = self._history[-1]
         self._move_to(jpos, config.STEP_MOVE_TICKS, "retrace", blocked_ok=True)
+        now = self._read_pos()
+        if abs(now - jpos) > config.HOLD_SAG_MAX_TICKS:   # off the known-clear path back: stop
+            raise Aborted(f"retrace: {self.joint} could not get back to {jpos} (at {now}) before moving "
+                          f"{m} back: held where it is")
+        self._history.pop()
         self._hold_homed_firm(self.snapshot)
         self._move_other(m, frm, lim=cap, what="undoing test move")
         if m in self._staged and abs(self.bus.read("Present_Position", m) - self._staged[m]) <= config.HOLD_SAG_MAX_TICKS \

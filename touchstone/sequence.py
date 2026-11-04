@@ -70,7 +70,7 @@ def run_sequence(bus, cal: dict, runs_dir: Path, plan: list[Step] = PLAN, mode: 
                  pause: Callable[[Step, int], str] = lambda step, tq: "",
                  on_event: Callable[[str], None] = print, on_sample=None,
                  confirm_release=None, stages: dict[str, dict[str, int]] | None = None,
-                 kin=None, gravity_fn=None) -> SequenceResult:
+                 kin=None, gravity_fn=None, verify_all: bool = False) -> SequenceResult:
     """pause(step, torque) -> "" to go, "s" to skip this joint, "q" to stop."""
     seq = SequenceResult()
     for i, step in enumerate(plan):
@@ -92,7 +92,8 @@ def run_sequence(bus, cal: dict, runs_dir: Path, plan: list[Step] = PLAN, mode: 
             first_write = len(bus.writes)
             homer = Homer(bus, cal, step.joint, torque_limit=tq, widen=step.widen, tolerance=step.tolerance,
                           on_event=on_event, on_sample=on_sample, confirm_release=confirm_release,
-                          stage=(stages or {}).get(step.joint), kin=kin, gravity_fn=gravity_fn)
+                          stage=(stages or {}).get(step.joint), kin=kin, gravity_fn=gravity_fn,
+                          verify_all=verify_all)
             try:
                 res = homer.run(todo)
             except Refused as e:

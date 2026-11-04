@@ -86,3 +86,60 @@ def test_a_stall_at_the_expected_stop_is_never_called_weak():
     heavy = lambda pose: {**NO_GRAVITY(pose), "gripper": 500.0}
     res = homer(bus, "gripper", torque_limit=80, gravity_fn=heavy).run(("min", "max"))
     assert [e.verdict for e in res.ends] == ["ok", "ok"]
+
+
+def test_a_trapped_backoff_never_lets_another_joint_move():
+    bus = sim(stops={**STOPS, "shoulder_lift": (780.0, 3115.0)}, pose={"shoulder_lift": 800, "elbow_flex": 3100})
+    bus.coupled.append(lift_blocked_while_elbow_folded)
+
+    def trap(bus):                       # once it reaches the block, something closes in behind it
+        J = bus.joints["shoulder_lift"]
+        if J.pos > 990:
+            J.stops = (985.0, J.stops[1])
+    bus.coupled.append(trap)
+    elbow0 = bus.joints["elbow_flex"].pos
+    res = homer(bus, "shoulder_lift", torque_limit=150).run(("max",))
+    assert res.aborted and "could not back off" in res.aborted
+    assert abs(bus.joints["elbow_flex"].pos - elbow0) < 3          # no test move happened
+
+
+def test_a_blocked_way_back_holds_instead_of_moving_the_other_joint_back():
+    bus = sim(stops={**STOPS, "shoulder_lift": (780.0, 3115.0)}, pose={"shoulder_lift": 800, "elbow_flex": 3100})
+    bus.coupled.append(lift_blocked_while_elbow_folded)
+
+    def trap(bus):                       # after the elbow moved, the way back for the shoulder closes
+        J, E = bus.joints["shoulder_lift"], bus.joints["elbow_flex"]
+        if E.pos < 2950 and J.pos > 1600:
+            J.stops = (1500.0, J.stops[1])
+    bus.coupled.append(trap)
+    res = homer(bus, "shoulder_lift", torque_limit=150).run(("max",))
+    assert res.aborted and "retrace" in res.aborted
+    assert bus.joints["elbow_flex"].pos < 2950                      # not moved back blind
+    assert "arm left staged" in " ".join(res.restore_errors)        # and nothing released
+
+
+def test_folded_shoulder_block_clears_with_real_gravity_from_the_model():
+    bus = sim(stops={**STOPS, "shoulder_lift": (780.0, 3115.0)}, pose={"shoulder_lift": 800, "elbow_flex": 3100})
+    bus.coupled.append(lift_blocked_while_elbow_folded)
+    h = Homer(bus, CAL, "shoulder_lift", on_event=lambda m: None, kin=KIN, torque_limit=150)   # KIN gravity
+    res = h.run(("max",))
+    e = res.ends[0]
+    assert res.aborted is None and e.verdict == "ok" and abs(e.stop - 3115) <= 3, (res.aborted, e.verdict, e.note)
+    assert all(t["cap"] > 80 for t in e.tests if t["joint"] == "elbow_flex")   # gravity-sized, not the floor
+
+
+def test_a_short_travel_tests_the_end_that_was_not_tested():
+    # both ends land within 60 of the calibration, but the travel is 30 deg short of the design
+    cal = {**CAL, "wrist_flex": {**CAL["wrist_flex"], "range_min": 1100, "range_max": 2850}}
+    bus = SimBusFor(cal, {"wrist_flex": (1095.0, 2855.0)})
+    h = Homer(bus, cal, "wrist_flex", on_event=lambda m: None, kin=Kinematics(cal), gravity_fn=NO_GRAVITY,
+              torque_limit=100)
+    res = h.run(("min", "max"))
+    assert res.aborted is None
+    assert all(e.tests for e in res.ends)                           # both ends were then tested
+    assert "short" in res.span_note
+
+
+def SimBusFor(cal, stops):
+    from touchstone.sim import SimBus
+    return SimBus(cal, stops={**STOPS, **stops})
