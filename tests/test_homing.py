@@ -401,3 +401,19 @@ def test_lead_cap_lets_the_push_reach_the_torque_limit():
     for limit in (80, 150, 230, 300):
         assert config.lead_for(limit) * config.LOAD_PER_TICK_P16 >= limit
     assert config.lead_for(400) <= config.LEAD_CEILING_TICKS
+
+
+def test_joint_resting_past_its_firmware_limit_is_left_limp_not_yanked():
+    # real arm 2026-11-04: shoulder_lift rests on its real stop at 748, below its 785 limit.
+    # Holding it would make the servo clamp the goal to 785 and jump there at full torque.
+    bus = sim(stops={**STOPS, "shoulder_lift": (745.0, 3115.0)}, pose={"shoulder_lift": 748})
+    h, res = home(bus, "gripper")
+    assert res.aborted is None and "shoulder_lift" in h.limp
+    assert bus.joints["shoulder_lift"].reg["Torque_Enable"] == 0
+    assert abs(bus.joints["shoulder_lift"].pos - 748) < 2
+
+
+def test_homed_joint_may_start_past_its_old_limit_within_the_widened_range():
+    bus = sim(stops={**STOPS, "shoulder_lift": (745.0, 3115.0)}, pose={"shoulder_lift": 748})
+    _, res = home(bus, "shoulder_lift", ends=("min",), torque_limit=150)
+    assert res.aborted is None and res.ends[0].verdict == "ok" and abs(res.ends[0].stop - 745) <= 3

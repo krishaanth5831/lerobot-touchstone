@@ -111,6 +111,7 @@ class Homer:
         # staging: other joints moved to a hand-taught pose so this joint can sweep freely
         self.stage = {m: int(t) for m, t in (stage or {}).items() if m != joint}
         self._staged: dict[str, int] = {}         # joint -> its rest tick, while it is away from rest
+        self.limp: list[str] = []                 # other joints left limp (resting outside their limits)
         self._hot = 0                             # temperature readings in a row over the abort line
         self._bad_volt = 0
 
@@ -186,6 +187,8 @@ class Homer:
 
     def _stage_in(self) -> None:
         for m in config.STAGE_ORDER:
+            if m in self.stage and m in self.limp:
+                raise Aborted(f"staging {m}: it rests outside its firmware limits and is limp; home it first")
             if m in self.stage:
                 rest = self.bus.read("Present_Position", m)
                 self._staged[m] = rest                      # marked BEFORE it moves
@@ -291,7 +294,10 @@ class Homer:
                             "Connect once with lerobot and press ENTER to write the JSON to the motors")
         pos = self.bus.read("Present_Position", j)
         lo, hi = cal[j]["range_min"], cal[j]["range_max"]
-        if not lo - config.START_MARGIN_TICKS <= pos <= hi + config.START_MARGIN_TICKS:
+        # The widened firmware limits must cover where it rests: shoulder_lift rests on its real
+        # stop at 748, 37 below the hand-recorded 785 (real arm 2026-11-04).
+        margin = max(config.START_MARGIN_TICKS, self.widen - 10)
+        if not lo - margin <= pos <= hi + margin:
             problems.append(f"{j}: at {pos}, outside its calibrated range {lo}..{hi}")
         if self.stage and not self.hold_others:
             problems.append("staging needs the other joints held (hold_others)")
@@ -319,7 +325,15 @@ class Homer:
         self.phase = "setup"
         if self.hold_others:
             for m in self.others:      # hold the rest of the arm exactly where it lies
-                b.write("Goal_Position", m, b.read("Present_Position", m))
+                p = b.read("Present_Position", m)
+                lo_m, hi_m = b.read("Min_Position_Limit", m), b.read("Max_Position_Limit", m)
+                if not lo_m <= p <= hi_m:
+                    # Resting past its firmware limit (on its real stop, by gravity): the servo would
+                    # clamp the goal and jump to the limit at full torque. Leave it limp instead.
+                    self.limp.append(m)
+                    self._event(f"{m} rests at {p}, outside its firmware limits {lo_m}..{hi_m}: left limp")
+                    continue
+                b.write("Goal_Position", m, p)
                 b.torque_on(m)
         lo, hi = self.cal[j]["range_min"], self.cal[j]["range_max"]
         if self.widen:
