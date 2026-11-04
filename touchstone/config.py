@@ -7,9 +7,11 @@ The force on a stop is capped twice, independently:
   1. Torque_Limit (RAM, addr 48) is set to the joint's HOMING torque limit below. This is
      a hard ceiling inside the servo firmware. It is RAM, so a crash followed by a power
      cycle puts the old value back by itself, and writing it never wears the EEPROM.
-  2. The goal never runs more than LEAD_MAX_TICKS ahead of where the joint really is.
-     The servo is a P controller, so its push is about 9 load units per tick of error at
-     P=16: 30 ticks of lead is at most ~27 % torque even if (1) somehow failed.
+  2. The goal never runs more than lead_for(limit) ticks ahead of where the joint really is.
+     The servo is a P controller: on the real arm its push is ~4.7 load units per tick of
+     error at P=16 (2026-11-03: 30 ticks of lead peaked at 136-140 whatever Torque_Limit
+     said, so a fixed 30-tick cap was the real limit and the elbow could not lift itself).
+     The lead cap is sized to reach the torque limit with 25 % to spare, and no more.
 """
 from pathlib import Path
 
@@ -82,14 +84,22 @@ STAGE_TORQUE_LIMIT = {
     "gripper": 80,
 }
 STAGE_STEP_TICKS = 2          # 100 ticks/s ~ 9 deg/s while staging
-STAGE_LEAD_MAX_TICKS = 40     # goal never more than this ahead of a staging joint
 
 # ------------------------------------------------------------------ motion
 CYCLE_HZ = 50                 # one read-decide-write cycle every 20 ms
 STEP_FAST_TICKS = 3           # first touch:  150 ticks/s ~ 13 deg/s
 STEP_SLOW_TICKS = 1           # second touch:  50 ticks/s ~  4 deg/s (the measurement)
 STEP_MOVE_TICKS = 4           # backing off and returning to the start pose
-LEAD_MAX_TICKS = 30           # goal never more than this ahead of the joint (see top), at P=16
+LEAD_MAX_TICKS = 30           # the old fixed cap; now lead_for() below sizes it per torque limit
+LOAD_PER_TICK_P16 = 4.5       # push per tick of error at P=16, real arm (140/30 elbow, 40/7 base), low side
+FULL_PUSH_LOAD_FRAC = 0.85    # Present_Load at this share of the torque limit = pushing at the cap
+LEAD_CEILING_TICKS = 100      # never more than this, whatever the limit (~450/1000 at P=16)
+
+
+def lead_for(torque_limit: int, p_gain: int = 16) -> int:
+    """Lead cap that lets the push reach torque_limit (+25 %) and no further."""
+    ticks = -(-1.25 * torque_limit // (LOAD_PER_TICK_P16 * p_gain / 16))
+    return int(max(STALL_MIN_LEAD_TICKS + 4, min(LEAD_CEILING_TICKS, ticks)))
 # The lead cap is a force cap only through the P gain: at P=32 (Feetech's factory default)
 # the same lead pushes twice as hard, so the cap is scaled by 16/P and P above this refused.
 P_REFERENCE = 16

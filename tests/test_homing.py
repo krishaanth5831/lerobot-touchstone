@@ -61,7 +61,8 @@ def test_push_is_capped_by_torque_limit_and_lead():
     h, res = home(bus, "gripper")
     limit = config.HOMING_TORQUE_LIMIT["gripper"]
     assert max(abs(r["load"]) for r in h.rows) <= limit
-    assert all(abs(r["goal"] - r["pos"]) <= config.LEAD_MAX_TICKS + config.STEP_MOVE_TICKS + 2
+    assert h.lead_max == config.lead_for(limit)
+    assert all(abs(r["goal"] - r["pos"]) <= h.lead_max + config.STEP_MOVE_TICKS + 2
                for r in h.rows if r["goal"] is not None)
     # the servo's own Torque_Limit really was the homing value while it moved
     tl = [v for _, m, r, v in bus.writes if m == "gripper" and r == "Torque_Limit"]
@@ -318,12 +319,13 @@ def test_rehearsal_moves_nothing_and_restores_everything():
                      ("Min_Position_Limit", 2030), ("Max_Position_Limit", 3481)]
 
 
-@pytest.mark.parametrize("p_gain,lead", [(16, 30), (32, 15), (8, 30)])
-def test_lead_cap_scales_with_p_gain(p_gain, lead):
+@pytest.mark.parametrize("p_gain", [16, 32, 8])
+def test_lead_cap_scales_with_p_gain(p_gain):
     bus = sim()
     bus.joints["gripper"].reg["P_Coefficient"] = p_gain
     h, res = home(bus, "gripper", ends=("max",))
-    assert h.lead_max == lead and res.ends[0].verdict == "ok"
+    # a stiffer servo pushes harder per tick: fewer ticks; a softer one is never given more
+    assert h.lead_max == config.lead_for(h.torque_limit, max(p_gain, 16)) and res.ends[0].verdict == "ok"
 
 
 def test_refuses_p_gain_above_max():
@@ -392,3 +394,10 @@ def test_joint_too_weak_to_leave_its_stop_is_suspect_not_an_abort():
     _, res = home(bus, "elbow_flex", torque_limit=80)
     assert res.aborted is None and not res.restore_errors
     assert res.ends[0].verdict == "suspect" and "could not move off its start pose" in res.ends[0].note
+
+
+def test_lead_cap_lets_the_push_reach_the_torque_limit():
+    # real arm 2026-11-03: a fixed 30-tick lead capped the elbow at ~140/1000 whatever its limit
+    for limit in (80, 150, 230, 300):
+        assert config.lead_for(limit) * config.LOAD_PER_TICK_P16 >= limit
+    assert config.lead_for(400) <= config.LEAD_CEILING_TICKS

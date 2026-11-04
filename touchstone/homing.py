@@ -209,6 +209,7 @@ class Homer:
         if b.read("Torque_Limit", m) != lim:
             b.write("Torque_Limit", m, hold_limit)
             raise Aborted(f"staging {m}: Torque_Limit did not read back as {lim}")
+        stage_lead = config.lead_for(lim, max(b.read("P_Coefficient", m), config.P_REFERENCE))
         self.phase, self._dir = f"stage {m}", 0        # the homed joint holds still meanwhile
         try:
             pos = b.read("Present_Position", m)
@@ -219,7 +220,7 @@ class Homer:
             timeout = abs(target - pos) / (config.STAGE_STEP_TICKS * config.CYCLE_HZ) + config.APPROACH_TIMEOUT_EXTRA_S
             self._next_tick = b.now()
             while True:
-                lead_cap = pos + d * config.STAGE_LEAD_MAX_TICKS
+                lead_cap = pos + d * stage_lead
                 goal = min(goal + config.STAGE_STEP_TICKS, lead_cap, target) if d > 0 else \
                     max(goal - config.STAGE_STEP_TICKS, lead_cap, target)
                 b.write("Goal_Position", m, goal)
@@ -229,7 +230,7 @@ class Homer:
                 t = b.now()
                 if st:
                     raise Aborted(f"staging {m}: Status {config.describe_status(st)} at {pos}")
-                if abs(pos - goal) > config.OVERRUN_TICKS + config.STAGE_LEAD_MAX_TICKS:
+                if abs(pos - goal) > config.OVERRUN_TICKS + stage_lead:
                     raise Aborted(f"staging {m}: at {pos}, {pos - goal:+d} from its goal {goal}: not under control")
                 hist.append((t, pos))
                 while len(hist) > 1 and t - hist[1][0] >= config.STALL_WINDOW_S:
@@ -279,9 +280,8 @@ class Homer:
         if not 0 < p_gain <= config.P_MAX:
             problems.append(f"{j}: P_Coefficient {p_gain}, expected 1..{config.P_MAX} (lerobot sets 16)")
         else:
-            # only ever scaled DOWN: a softer servo (P<16) pushes less per tick anyway
-            self.lead_max = max(config.STALL_MIN_LEAD_TICKS + 4,
-                                min(config.LEAD_MAX_TICKS, round(config.LEAD_MAX_TICKS * config.P_REFERENCE / p_gain)))
+            # sized so the push can reach the torque limit and no further (a stiffer P = fewer ticks)
+            self.lead_max = config.lead_for(self.torque_limit, max(p_gain, config.P_REFERENCE))
         eeprom = {k: self.bus.read(r, j) for k, r in
                   (("homing_offset", "Homing_Offset"), ("range_min", "Min_Position_Limit"),
                    ("range_max", "Max_Position_Limit"))}
@@ -471,9 +471,10 @@ class Homer:
         return r
 
     def _approach(self, d: int, step: int, search: int, phase: str) -> Touch:
-        self.phase, self._dir = phase, d
+        self.phase = phase
+        self._release_push(d)
         s = self._sample()
-        # keep the current goal: resetting it to pos would drop a gravity-loaded joint's preload
+        # keep the current goal (same direction): resetting it would drop a gravity-loaded joint's preload
         t0, hist, peak, best = s.t, deque([(s.t, s.pos)]), 0, s.pos
         timeout = abs(search - s.pos) / (step * config.CYCLE_HZ) + config.APPROACH_TIMEOUT_EXTRA_S
         push_since = None          # when the goal reached the full lead cap ahead of the joint
@@ -492,7 +493,12 @@ class Homer:
             # STALL_WINDOW_S and still no progress. "Lead >= 8 at this instant" was not enough: on
             # the real arm a slow touch on shoulder_pan, still ramping up from a backoff (load 48
             # of 80), was called a stop 33 ticks before the real one.
-            if lead >= self.lead_max - step:
+            # "Pushing with everything allowed": the goal a full lead cap ahead, or (when the goal is
+            # pinned on the search limit and cannot get that far) the servo's own load at the cap.
+            # A joint parked on friction short of the limit reads far less (40 of 80 on the base).
+            full = lead >= self.lead_max - step or \
+                (lead >= config.STALL_MIN_LEAD_TICKS and abs(s.load) >= config.FULL_PUSH_LOAD_FRAC * self.torque_limit)
+            if full:
                 push_since = s.t if push_since is None else push_since
             else:
                 push_since = None
@@ -502,7 +508,7 @@ class Homer:
                 # Goal parked on the search limit and the joint stopped short of it with too
                 # little lead to call a stall: friction, not a stop. A stiff joint (shoulder_pan
                 # on the real arm) parks up to ~STALL_MIN_LEAD_TICKS short, so no distance test.
-                if self.goal == search:
+                if self.goal == search and not full:      # pushing at the cap there = let the window decide
                     return Touch("soft_limit", s.pos, s.t, peak)
             if s.t - t0 > timeout:
                 raise Aborted(f"{phase}: no stall and no limit after {timeout:.1f} s (at {s.pos}, goal {self.goal})")
@@ -517,9 +523,9 @@ class Homer:
         self.phase = phase
         lo, hi = self.limits
         target = min(max(target, lo), hi)
+        d = 1 if target >= self._read_pos() else -1
+        self._release_push(d)
         s = self._sample()
-        d = 1 if target >= s.pos else -1
-        self._dir = d
         t0, hist, best = s.t, deque([(s.t, s.pos)]), s.pos
         timeout = abs(target - s.pos) / (step * config.CYCLE_HZ) + config.APPROACH_TIMEOUT_EXTRA_S
         while True:
@@ -544,6 +550,11 @@ class Homer:
                     return
                 raise Aborted(f"{phase}: blocked at {s.pos} while moving to {target}")
             if s.t - t0 > timeout:
+                if blocked_ok:                         # a backoff that cannot get clear: hold there
+                    self.goal = s.pos
+                    self.bus.write("Goal_Position", self.joint, self.goal)
+                    self._event(f"{phase}: could not get to {target} (at {s.pos}), holding there")
+                    return
                 raise Aborted(f"{phase}: did not reach {target} in {timeout:.1f} s (at {s.pos})")
 
     def _check_sag(self, pos: int, d: int, best: int, phase: str) -> int:
@@ -553,6 +564,16 @@ class Homer:
             raise Aborted(f"{phase}: {self.joint} moving against the command ({best} -> {pos}): gravity is "
                           f"stronger than torque limit {self.torque_limit}/1000")
         return best
+
+    def _release_push(self, d: int) -> None:
+        """Before moving in direction d: if the goal still sits on the other side (pressed into a
+        stop the other way, up to a full lead cap), start it from where the joint really is.
+        Otherwise the first sample sees the joint a whole lead 'ahead' of its goal."""
+        pos = self._read_pos()
+        if self.goal is not None and d * (self.goal - pos) < 0:
+            self.goal = pos
+            self.bus.write("Goal_Position", self.joint, self.goal)
+        self._dir = d
 
     def _next_goal(self, pos: int, d: int, step: int, limit: int) -> int:
         if d > 0:
