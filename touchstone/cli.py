@@ -30,6 +30,18 @@ def load_stage(args, joint: str) -> dict[str, int]:
     return {m: t for m, t in entry["pose"].items() if m != joint} if entry else {}
 
 
+def make_kin(args, calibration):
+    """The kinematics model for the blocked-or-real-stop tests, or None (old behaviour)."""
+    if getattr(args, "no_tests", False):
+        return None
+    try:
+        from .kinematics import Kinematics
+        return Kinematics(calibration)
+    except Exception as e:  # noqa: BLE001 - mujoco missing: home without the tests, and say so
+        print(f"(no blocked-or-real-stop tests: {e!r}; far stalls are reported as 'suspect')")
+        return None
+
+
 def make_bus(args, calibration):
     if args.sim:
         from .sim import SimBus
@@ -103,7 +115,7 @@ def cmd_home(args) -> int:
             event(f"staging pose from {config.STAGING_JSON.name}: " + ", ".join(f"{m} {t}" for m, t in stage.items()))
         homer = Homer(bus, cal, args.joint, torque_limit=args.torque_limit, widen=args.widen,
                       tolerance=args.tolerance, on_event=event, on_sample=live,
-                      confirm_release=None if args.sim else release, stage=stage)
+                      confirm_release=None if args.sim else release, stage=stage, kin=make_kin(args, cal))
         try:
             result = homer.run(ends)
         except Refused as e:
@@ -163,7 +175,7 @@ def cmd_home_all(args) -> int:
 
     try:
         seq = run_sequence(bus, cal, args.runs_dir, plan=plan, mode="sim" if args.sim else "real",
-                           stages={s.joint: load_stage(args, s.joint) for s in plan},
+                           stages={s.joint: load_stage(args, s.joint) for s in plan}, kin=make_kin(args, cal),
                            pause=pause, on_event=event, on_sample=live,
                            confirm_release=None if args.sim else release)
     finally:
@@ -331,6 +343,8 @@ def main(argv=None) -> int:
                     help="how far from the calibrated end a stop may be and still count")
     sp.add_argument("--runs-dir", type=Path, default=config.RUNS_DIR)
     sp.add_argument("--no-stage", action="store_true", help="ignore a taught staging pose, home from rest")
+    sp.add_argument("--no-tests", action="store_true",
+                    help="don't test far stalls by moving other joints (report them as suspect)")
     sp.set_defaults(fn=cmd_home)
 
     sp = sub.add_parser("teach", help="read-only: save the pose you hold the arm in as a joint's staging pose")
@@ -344,6 +358,8 @@ def main(argv=None) -> int:
     sim_flags(sp)
     sp.add_argument("--only", nargs="+", choices=config.JOINTS, help="just these joints, in the safe order")
     sp.add_argument("--no-stage", action="store_true", help="ignore taught staging poses, home from rest")
+    sp.add_argument("--no-tests", action="store_true",
+                    help="don't test far stalls by moving other joints (report them as suspect)")
     sp.add_argument("--runs-dir", type=Path, default=config.RUNS_DIR)
     sp.set_defaults(fn=cmd_home_all)
 

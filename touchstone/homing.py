@@ -22,6 +22,8 @@ from __future__ import annotations
 import signal
 import statistics
 import traceback
+
+import numpy as np
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Callable
@@ -53,6 +55,7 @@ class EndResult:
     stop: int | None = None
     verdict: str = ""
     note: str = ""
+    tests: list = field(default_factory=list)   # test moves: {"joint", "to", "stall_after", "outcome"}
 
 
 @dataclass
@@ -66,6 +69,7 @@ class JointResult:
     aborted: str | None = None
     restore_errors: list[str] = field(default_factory=list)
     staged: dict = field(default_factory=dict)          # other joint -> staging tick it was moved to
+    span_note: str = ""                                 # measured travel vs the design travel
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -85,7 +89,8 @@ class Homer:
                  hold_others: bool = True, on_event: Callable[[str], None] = print,
                  on_sample: Callable[[dict], None] | None = None,
                  confirm_release: Callable[[], None] | None = None,
-                 stage: dict[str, int] | None = None):
+                 stage: dict[str, int] | None = None, kin=None,
+                 gravity_fn: Callable[[dict], dict] | None = None):
         if joint not in config.JOINTS:
             raise Refused(f"unknown joint {joint!r}; choose from {config.JOINTS}")
         self.bus = bus
@@ -112,6 +117,10 @@ class Homer:
         self.stage = {m: int(t) for m, t in (stage or {}).items() if m != joint}
         self._staged: dict[str, int] = {}         # joint -> its rest tick, while it is away from rest
         self.limp: list[str] = []                 # other joints left limp (resting outside their limits)
+        # blocked-or-real-stop tests (touchstone.kinematics.Kinematics); None = old behaviour
+        self.kin = kin
+        self.gravity_fn = gravity_fn or (kin.gravity_load if kin is not None else None)
+        self._history: list[tuple[str, int, int, int]] = []  # (other joint, its tick before, homed tick, cap)
         self._hot = 0                             # temperature readings in a row over the abort line
         self._bad_volt = 0
 
@@ -139,6 +148,7 @@ class Homer:
                 raise
             for end in ends:
                 res.ends.append(self._home_end(end))
+            res.span_note = self._span_note(res)
             self._event(f"returning to the start pose ({res.start_pos})")
             self._return_to(res.start_pos)
             if self.stage:
@@ -203,17 +213,17 @@ class Homer:
             self._move_other(m, self._staged[m])
             del self._staged[m]
 
-    def _move_other(self, m: str, target: int) -> None:
-        """Move one held joint to target at its staging torque cap, watching it and the homed joint."""
+    def _move_other(self, m: str, target: int, lim: int | None = None, what: str = "staging") -> None:
+        """Move one held joint to target at a capped torque, watching it and the homed joint."""
         b = self.bus
         hold_limit = b.read("Torque_Limit", m)
-        lim = config.STAGE_TORQUE_LIMIT[m]
+        lim = config.STAGE_TORQUE_LIMIT[m] if lim is None else int(lim)
         b.write("Torque_Limit", m, lim)
         if b.read("Torque_Limit", m) != lim:
             b.write("Torque_Limit", m, hold_limit)
-            raise Aborted(f"staging {m}: Torque_Limit did not read back as {lim}")
+            raise Aborted(f"{what} {m}: Torque_Limit did not read back as {lim}")
         stage_lead = config.lead_for(lim, max(b.read("P_Coefficient", m), config.P_REFERENCE))
-        self.phase, self._dir = f"stage {m}", 0        # the homed joint holds still meanwhile
+        self.phase, self._dir = f"{'stage' if what == 'staging' else 'test'} {m}", 0   # the homed joint holds still
         try:
             pos = b.read("Present_Position", m)
             goal = pos
@@ -232,9 +242,9 @@ class Homer:
                 pos, st = b.read("Present_Position", m), b.read("Status", m)
                 t = b.now()
                 if st:
-                    raise Aborted(f"staging {m}: Status {config.describe_status(st)} at {pos}")
+                    raise Aborted(f"{what} {m}: Status {config.describe_status(st)} at {pos}")
                 if abs(pos - goal) > config.OVERRUN_TICKS + stage_lead:
-                    raise Aborted(f"staging {m}: at {pos}, {pos - goal:+d} from its goal {goal}: not under control")
+                    raise Aborted(f"{what} {m}: at {pos}, {pos - goal:+d} from its goal {goal}: not under control")
                 hist.append((t, pos))
                 while len(hist) > 1 and t - hist[1][0] >= config.STALL_WINDOW_S:
                     hist.popleft()
@@ -242,10 +252,10 @@ class Homer:
                 if goal == target and (abs(target - pos) <= 3 or (still and abs(target - pos) <= config.HOLD_SAG_MAX_TICKS)):
                     return
                 if goal != target and still and d * (goal - pos) >= config.STALL_MIN_LEAD_TICKS:
-                    raise Aborted(f"staging {m}: blocked at {pos} on the way to {target} (pushing at most "
-                                  f"{lim}/1000). Something is in the way: re-teach this pose")
+                    raise Aborted(f"{what} {m}: blocked at {pos} on the way to {target} (pushing at most "
+                                  f"{lim}/1000). Something is in the way")
                 if t - t0 > timeout:
-                    raise Aborted(f"staging {m}: did not reach {target} in {timeout:.1f} s (at {pos})")
+                    raise Aborted(f"{what} {m}: did not reach {target} in {timeout:.1f} s (at {pos})")
         finally:
             # hold exactly where it is, at the limit it held with before (no jump toward a goal)
             try:
@@ -447,42 +457,266 @@ class Homer:
         d = -1 if end == "min" else 1
         expected = self.cal[self.joint]["range_min" if end == "min" else "range_max"]
         r = EndResult(end, expected)
-        # never search further than a stop we would accept could be
         fw = self.limits[0] if d < 0 else self.limits[1]
-        search = max(fw, expected - self.tolerance) if d < 0 else min(fw, expected + self.tolerance)
+        # Without the blocked-or-real test the plausibility window bounds the search; with it, the
+        # whole widened window is searched and a far stall is tested instead of trusted or rejected.
+        search = fw if self.kin is not None else (max(fw, expected - self.tolerance) if d < 0
+                                                  else min(fw, expected + self.tolerance))
+        self._history = []
+        self._find_stop(r, d, expected, search)
+        if self._history:
+            self._event(f"{end}: retracing {len(self._history)} test move(s) back to the start pose")
+            self._retrace()
+        self._event(f"{end}: {r.verdict}: {r.note}")
+        return r
 
-        self._event(f"{end}: touch 1 (fast) toward {expected}, search limit {search}")
+    def _find_stop(self, r: EndResult, d: int, expected: int, search: int) -> None:
+        end = r.end
         p0 = self._read_pos()
-        t1 = self._approach(d, config.STEP_FAST_TICKS, search, f"{end}-touch1")
-        r.touches.append(t1)
-        self._backoff(t1.position, d, end)
-        if t1.kind == "soft_limit":
-            r.verdict, r.note = "no_stop", f"reached the search limit {search} without stalling"
-            return r
-        if abs(t1.position - expected) > self.tolerance:
-            r.verdict, r.stop = "suspect", t1.position
-            r.note = f"stalled at {t1.position}, {t1.position - expected:+d} from the calibrated end"
-            if abs(t1.position - p0) < config.STUCK_AT_START_TICKS:
-                r.note += (f"; it could not move off its start pose ({p0}): torque limit {self.torque_limit}/1000 "
-                           "is too weak for this joint here, or something blocks it")
-            return r
+        self._event(f"{end}: touch 1 (fast) toward {expected}, search limit {search}")
+        anchor, uncovered, tried, n_same = None, None, set(), 0
+        retouch = True
+        while True:
+            if not retouch:                                 # a worse test move was just undone:
+                retouch, p = True, anchor                   # back at the anchor pose, pick the next test
+                cand = self._choose_test(p, uncovered, tried)
+                if cand is None or len(r.tests) >= config.MAX_PERTURBATIONS:
+                    r.verdict, r.stop = "blocked", anchor
+                    r.note = f"stalled at {anchor}; every test move made it worse or none was left"
+                    return
+                self._run_test(r, cand, tried, p, d, end)
+                continue
+            t1 = self._approach(d, config.STEP_FAST_TICKS, search, f"{end}-touch1")
+            r.touches.append(t1)
+            if t1.kind == "soft_limit":
+                self._backoff(t1.position, d, end)
+                r.verdict, r.note = "no_stop", f"reached the search limit {search} without stalling"
+                return
+            p = t1.position
+            near = abs(p - expected) <= self.tolerance
+            # Gravity can only explain a stall away from the stop: AT a real stop it stalls anyway.
+            weak = None if near else self._weakness(p)
+            if weak:
+                self._backoff(p, d, end)
+                r.verdict, r.stop, r.note = "weak", p, weak
+                if abs(p - p0) < config.STUCK_AT_START_TICKS:
+                    r.note += f"; it could not move off its start pose ({p0})"
+                return
+            if anchor is not None:
+                last = r.tests[-1]
+                last["stall_after"] = p
+                if abs(p - anchor) <= config.CONFIRM_TICKS:
+                    last["outcome"] = "same stop"
+                    n_same += 1
+                    uncovered -= set(map(tuple, last["moves_pairs"]))
+                elif d * (p - anchor) > config.CONFIRM_TICKS:
+                    last["outcome"] = f"got further: {anchor} -> {p}, it was blocked"
+                    self._event(f"{end}: moving {last['joint']} cleared it: {anchor} -> {p}")
+                    anchor, uncovered, n_same = None, None, 0
+                else:
+                    last["outcome"] = f"stopped shorter ({p} vs {anchor}): that pose is worse, undone"
+                    self._backoff_far(p, d)
+                    self._undo_last()
+                    retouch = False
+                    continue
+            if anchor is None:
+                if near:
+                    break                                   # where the stop should be: measure it
+                if self.kin is None:                        # no way to test it: never push it twice
+                    self._backoff(p, d, end)
+                    r.verdict, r.stop = "suspect", p
+                    r.note = f"stalled at {p}, {p - expected:+d} from the calibrated end"
+                    if abs(p - p0) < config.STUCK_AT_START_TICKS:
+                        r.note += (f"; it could not move off its start pose ({p0}): torque limit "
+                                   f"{self.torque_limit}/1000 is too weak for this joint here, or something blocks it")
+                    return
+                anchor, uncovered = p, self._coverable(p)
+                self._event(f"{end}: stalled at {p} ({p - expected:+d} vs calibration): testing whether "
+                            "it is the real stop or something in the way")
+            if n_same and (not uncovered or n_same >= 2):
+                break                                       # the same stop whatever the pose: real
+            if len(r.tests) >= config.MAX_PERTURBATIONS:
+                r.verdict, r.stop = "blocked", anchor
+                r.note = (f"stalled at {anchor} and could not tell or clear it in {len(r.tests)} test moves "
+                          f"({anchor - expected:+d} vs calibration)")
+                self._backoff(p, d, end)
+                return
+            cand = self._choose_test(p, uncovered, tried)
+            if cand is None:
+                if n_same:
+                    break                                   # every possible move tried: same stop
+                r.verdict, r.stop = "blocked", anchor
+                r.note = f"stalled at {anchor}; no other joint can move to test it"
+                self._backoff(p, d, end)
+                return
+            self._run_test(r, cand, tried, p, d, end)
 
+        # the measurement: slow touches at this pose
+        self._backoff(t1.position, d, end)
         self._event(f"{end}: touch 2 (slow)")
         t2 = self._approach(d, config.STEP_SLOW_TICKS, search, f"{end}-touch2")
         r.touches.append(t2)
         self._backoff(t2.position, d, end)
-        if t2.kind != "stop" or abs(t2.position - t1.position) > config.REPEAT_TOLERANCE_TICKS:
+        agree = t2.kind == "stop" and abs(t2.position - t1.position) <= config.REPEAT_TOLERANCE_TICKS
+        stop = t2.position
+        if not agree and t2.kind == "stop":                 # a third touch breaks the tie
+            self._event(f"{end}: touches disagree ({t1.position} / {t2.position}): touch 3 (slow)")
+            t3 = self._approach(d, config.STEP_SLOW_TICKS, search, f"{end}-touch3")
+            r.touches.append(t3)
+            self._backoff(t3.position, d, end)
+            pairs = [(a, b) for a, b in ((t1, t3), (t2, t3)) if b.kind == "stop"
+                     and abs(a.position - b.position) <= config.REPEAT_TOLERANCE_TICKS]
+            if pairs:
+                agree, stop = True, pairs[-1][1].position
+        if not agree:
             r.verdict = "unrepeatable"
-            r.note = f"touch 1 {t1.kind}@{t1.position}, touch 2 {t2.kind}@{t2.position}"
-            return r
-        r.stop = t2.position
-        if abs(r.stop - expected) > self.tolerance:
-            r.verdict, r.note = "suspect", f"{r.stop - expected:+d} from the calibrated end"
+            r.note = "touches " + ", ".join(f"{t.kind}@{t.position}" for t in r.touches[-3:])
+            return
+        r.stop = stop
+        if r.tests:
+            same = sum(1 for t in r.tests if t.get("outcome") == "same stop")
+            cleared = [t["joint"] for t in r.tests if str(t.get("outcome", "")).startswith("got further")]
+            r.verdict = "ok"
+            r.note = f"stop {stop} ({stop - expected:+d} vs calibration)"
+            if cleared:
+                r.note += f"; it was blocked until {', '.join(cleared)} moved out of the way"
+            if same:
+                r.note += f"; the same stop under {1 + same} different poses"
+        elif abs(stop - expected) > self.tolerance:
+            r.verdict, r.note = "suspect", f"{stop - expected:+d} from the calibrated end"
         else:
-            r.verdict, r.note = "ok", f"stop {r.stop} ({r.stop - expected:+d} vs calibration), touches agree " \
-                                      f"to {abs(t2.position - t1.position)} ticks"
-        self._event(f"{end}: {r.verdict}: {r.note}")
-        return r
+            r.verdict, r.note = "ok", f"stop {stop} ({stop - expected:+d} vs calibration), touches agree"
+
+    # ------------------------------------------------------------------ blocked or real: helpers
+    def _span_note(self, res: JointResult) -> str:
+        stops = {e.end: e.stop for e in res.ends if e.verdict == "ok"}
+        if set(stops) != {"min", "max"}:
+            return ""
+        deg = (stops["max"] - stops["min"]) * 360 / 4095
+        design = config.DESIGN_SPAN_DEG[self.joint]
+        if deg < design - config.SPAN_SHORT_DEG:
+            return (f"travel {deg:.0f} deg is {design - deg:.0f} deg short of the design {design}: one end may "
+                    "still be something in the way")
+        return f"travel {deg:.0f} deg (design {design})"
+
+    def _pose(self) -> dict[str, int]:
+        return {m: self.bus.read("Present_Position", m) for m in config.JOINTS}
+
+    def _weakness(self, p: int) -> str | None:
+        """A plain reason if gravity alone explains a stall at p, else None."""
+        if self.gravity_fn is None:
+            return None
+        g = self.gravity_fn({**self._pose(), self.joint: p})[self.joint]
+        need = config.WEAK_FACTOR * g + config.WEAK_FRICTION
+        if need > self.torque_limit:
+            return (f"stalled at {p}, where gravity alone needs ~{need:.0f}/1000 (1.5 x {g:.0f} + 40) and the "
+                    f"limit is {self.torque_limit}/1000: too weak, not blocked")
+        return None
+
+    def _pairs(self) -> list[tuple[str, str]]:
+        """Pairs that could be touching when this joint stalls: a link it moves against one it does not
+        (or the base, or the table), minus neighbours (their contact IS a joint's own stop)."""
+        from .kinematics import CHAIN
+        order = config.JOINTS
+        k = order.index(self.joint)
+        moved = [CHAIN[j] for j in order[k:]]
+        fixed = [CHAIN[j] for j in order[:k]] + ["base", "table"]
+        chain = ["base"] + [CHAIN[j] for j in order]
+        adjacent = {(chain[i], chain[i + 1]) for i in range(len(chain) - 1)}
+        return [(a, b) for a in moved for b in fixed if (b, a) not in adjacent and (a, b) not in adjacent]
+
+    def _moved_pairs(self, before: dict, after: dict) -> set[tuple[str, str]]:
+        """Pairs whose relative position a pose change shifts by more than PAIR_MOVED_MM."""
+        out = set()
+        for a, b in self._pairs():
+            A0, A1 = before[a], after[a]
+            if b == "table":
+                shift = float(np.mean(np.abs(A1[:, 2] - A0[:, 2])))        # only height matters
+            elif b == "base":
+                shift = float(np.mean(np.linalg.norm(A1 - A0, axis=1)))
+            else:
+                c0, c1 = before[b].mean(0), after[b].mean(0)
+                shift = float(np.mean(np.linalg.norm((A1 - c1) - (A0 - c0), axis=1)))
+            if shift * 1000 >= config.PAIR_MOVED_MM:
+                out.add((a, b))
+        return out
+
+    def _test_moves(self, p: int):
+        """(other joint, target tick, pairs it moves, torque cap) for every allowed test move."""
+        pose = {**self._pose(), self.joint: p}
+        before = self.kin.corners(pose)
+        out = []
+        for m in self.others:
+            if m in self.limp:
+                continue
+            lo = self.cal[m]["range_min"] + config.PERTURB_MARGIN_TICKS
+            hi = self.cal[m]["range_max"] - config.PERTURB_MARGIN_TICKS
+            for sgn in (1, -1):
+                target = int(min(max(pose[m] + sgn * config.PERTURB_TICKS, lo), hi))
+                if abs(target - pose[m]) < config.PERTURB_TICKS // 2:
+                    continue
+                after = self.kin.corners({**pose, m: target})
+                g = max(self.gravity_fn({**pose, m: pose[m] + f * (target - pose[m])})[m] for f in (0, .25, .5, .75, 1))
+                cap = int(min(config.TORQUE_LIMIT_CEILING, max(80, round(config.WEAK_FACTOR * g + config.WEAK_FRICTION))))
+                if config.WEAK_FACTOR * g + config.WEAK_FRICTION > config.TORQUE_LIMIT_CEILING:
+                    continue
+                out.append((m, target, self._moved_pairs(before, after), cap))
+        return out
+
+    def _coverable(self, p: int) -> set[tuple[str, str]]:
+        cov = set()
+        for _, _, pairs, _ in self._test_moves(p):
+            cov |= pairs
+        return cov
+
+    def _choose_test(self, p: int, uncovered: set, tried: set):
+        """The untried test move that shifts the most still-untested pairs; low cap breaks ties.
+        Lifting the link tips off the table is what clears most blocks, so it wins ties too."""
+        best, best_key = None, None
+        for m, target, pairs, cap in self._test_moves(p):
+            if (m, target) in tried:
+                continue
+            key = (len(pairs & uncovered), len(pairs), -cap)
+            if best_key is None or key > best_key:
+                best, best_key = (m, target, pairs, cap), key
+        return best
+
+    def _run_test(self, r: EndResult, cand, tried: set, p: int, d: int, end: str) -> None:
+        m, target, pairs, cap = cand
+        tried.add((m, target))
+        self._backoff_far(p, d)
+        self._event(f"{end}: test move: {m} {self.bus.read('Present_Position', m)} -> {target} "
+                    f"(cap {cap}/1000), then touch again")
+        r.tests.append({"joint": m, "to": target, "moves_pairs": sorted(pairs), "cap": cap})
+        self._perturb(m, target, cap)
+
+    def _backoff_far(self, p: int, d: int) -> None:
+        self._move_to(p - d * config.PERTURB_BACKOFF_TICKS, config.STEP_MOVE_TICKS, "test-backoff", blocked_ok=True)
+
+    def _perturb(self, m: str, target: int, cap: int) -> None:
+        """Move another joint for a test, the homed joint holding firm. Recorded for the retrace."""
+        frm = self.bus.read("Present_Position", m)
+        if m not in self._staged:
+            self._staged[m] = frm                           # away from rest: never released unattended
+        self._history.append((m, frm, self._read_pos(), cap))
+        self._hold_homed_firm(self.snapshot)
+        self._move_other(m, target, lim=cap, what="test move")
+        self._set_homed_limit(self.torque_limit)
+
+    def _undo_last(self) -> None:
+        m, frm, jpos, cap = self._history.pop()
+        self._move_to(jpos, config.STEP_MOVE_TICKS, "retrace", blocked_ok=True)
+        self._hold_homed_firm(self.snapshot)
+        self._move_other(m, frm, lim=cap, what="undoing test move")
+        if m in self._staged and abs(self.bus.read("Present_Position", m) - self._staged[m]) <= config.HOLD_SAG_MAX_TICKS \
+                and not any(h[0] == m for h in self._history):
+            del self._staged[m]
+        self._set_homed_limit(self.torque_limit)
+
+    def _retrace(self) -> None:
+        """Undo every test move in reverse: the exact path back, so known clear."""
+        while self._history:
+            self._undo_last()
 
     def _approach(self, d: int, step: int, search: int, phase: str) -> Touch:
         self.phase = phase

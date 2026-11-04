@@ -39,7 +39,7 @@ PLAN = [
     Step("shoulder_pan", [80], widen=150, tolerance=150, advice="the base sweeps ~220 deg: clear the path"),
     Step("wrist_flex", [100, 120], advice="jaw clear of the table and the forearm"),
     Step("elbow_flex", [230, 280], advice="hand under the forearm"),
-    Step("shoulder_lift", [100, 150, 200],
+    Step("shoulder_lift", [100, 150, 200], widen=150,   # rests at 748, 37 below the hand-recorded 785
          advice="hand under the upper arm the whole time; Ctrl-C if it falls forward past vertical"),
 ]
 
@@ -52,7 +52,7 @@ WEAK_NOTE = "could not move off its start pose"
 def too_weak(res: JointResult) -> bool:
     if res.aborted:
         return any(k in res.aborted for k in WEAK_ABORTS)
-    return any(e.verdict == "suspect" and WEAK_NOTE in e.note for e in res.ends)
+    return any(e.verdict == "weak" or (e.verdict == "suspect" and WEAK_NOTE in e.note) for e in res.ends)
 
 
 @dataclass
@@ -69,7 +69,8 @@ class SequenceResult:
 def run_sequence(bus, cal: dict, runs_dir: Path, plan: list[Step] = PLAN, mode: str = "real",
                  pause: Callable[[Step, int], str] = lambda step, tq: "",
                  on_event: Callable[[str], None] = print, on_sample=None,
-                 confirm_release=None, stages: dict[str, dict[str, int]] | None = None) -> SequenceResult:
+                 confirm_release=None, stages: dict[str, dict[str, int]] | None = None,
+                 kin=None, gravity_fn=None) -> SequenceResult:
     """pause(step, torque) -> "" to go, "s" to skip this joint, "q" to stop."""
     seq = SequenceResult()
     for i, step in enumerate(plan):
@@ -91,7 +92,7 @@ def run_sequence(bus, cal: dict, runs_dir: Path, plan: list[Step] = PLAN, mode: 
             first_write = len(bus.writes)
             homer = Homer(bus, cal, step.joint, torque_limit=tq, widen=step.widen, tolerance=step.tolerance,
                           on_event=on_event, on_sample=on_sample, confirm_release=confirm_release,
-                          stage=(stages or {}).get(step.joint))
+                          stage=(stages or {}).get(step.joint), kin=kin, gravity_fn=gravity_fn)
             try:
                 res = homer.run(todo)
             except Refused as e:

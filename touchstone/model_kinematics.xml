@@ -1,0 +1,92 @@
+<!-- SO-101 bodies, joints and inertia only (no meshes), from TheRobotStudio/SO-ARM100
+     Simulation/SO101/so101_new_calib.xml, Apache-2.0. Sites <link>_c0..7 = corners of each link's
+     collision box (scripts/decompose_so101.py parts). For gravity and link positions while homing. -->
+<mujoco model="MuJoCo Model">
+  <compiler angle="radian" meshdir="parts/"/>
+
+  <worldbody>
+    <body name="base">
+      <inertial pos="0.0137179 -5.19711e-05 0.0334843" quat="0.420519 0.558762 0.57198 0.428704" mass="0.147" diaginertia="0.000136127 0.000131807 0.000113233"/>
+      <site name="base_c0" pos="-0.0309827 -0.0554624 -0.0024"/>
+      <site name="base_c1" pos="-0.0309827 -0.0554624 0.0696"/>
+      <site name="base_c2" pos="-0.0309827 0.0554625 -0.0024"/>
+      <site name="base_c3" pos="-0.0309827 0.0554625 0.0696"/>
+      <site name="base_c4" pos="0.0646353 -0.0554624 -0.0024"/>
+      <site name="base_c5" pos="0.0646353 -0.0554624 0.0696"/>
+      <site name="base_c6" pos="0.0646353 0.0554625 -0.0024"/>
+      <site name="base_c7" pos="0.0646353 0.0554625 0.0696"/>
+      <body name="shoulder" pos="0.0388353 -8.97657e-09 0.0624" quat="0 0 -1 0">
+        <inertial pos="-0.0307604 -1.66727e-05 -0.0252713" quat="0.999865 0.00149563 0.0097084 0.0132043" mass="0.100006" diaginertia="8.37836e-05 8.10388e-05 2.39552e-05"/>
+        <joint name="shoulder_pan" pos="0 0 0" axis="0 0 1" limited="false" range="-1.91986 1.91986"/>
+        <site name="shoulder_c0" pos="-0.0509021 -0.0266807 -0.064398"/>
+        <site name="shoulder_c1" pos="-0.0509021 -0.0266807 0.0462"/>
+        <site name="shoulder_c2" pos="-0.0509021 0.0289467 -0.064398"/>
+        <site name="shoulder_c3" pos="-0.0509021 0.0289467 0.0462"/>
+        <site name="shoulder_c4" pos="0.0122001 -0.0266807 -0.064398"/>
+        <site name="shoulder_c5" pos="0.0122001 -0.0266807 0.0462"/>
+        <site name="shoulder_c6" pos="0.0122001 0.0289467 -0.064398"/>
+        <site name="shoulder_c7" pos="0.0122001 0.0289467 0.0462"/>
+        <body name="upper_arm" pos="-0.0303992 -0.0182778 -0.0542" quat="0.5 -0.5 -0.5 -0.5">
+          <inertial pos="-0.0898471 -0.00838224 0.0184089" quat="0.453195 0.454063 0.541891 0.542951" mass="0.103" diaginertia="0.000150873 0.000142487 3.72451e-05"/>
+          <joint name="shoulder_lift" pos="0 0 0" axis="0 0 1" limited="false" range="-1.74533 1.74533"/>
+          <site name="upper_arm_c0" pos="-0.13017 -0.038198 -0.0135"/>
+          <site name="upper_arm_c1" pos="-0.13017 -0.038198 0.0538"/>
+          <site name="upper_arm_c2" pos="-0.13017 0.012 -0.0135"/>
+          <site name="upper_arm_c3" pos="-0.13017 0.012 0.0538"/>
+          <site name="upper_arm_c4" pos="0.0119993 -0.038198 -0.0135"/>
+          <site name="upper_arm_c5" pos="0.0119993 -0.038198 0.0538"/>
+          <site name="upper_arm_c6" pos="0.0119993 0.012 -0.0135"/>
+          <site name="upper_arm_c7" pos="0.0119993 0.012 0.0538"/>
+          <body name="lower_arm" pos="-0.11257 -0.028 0" quat="0.707107 0 0 0.707107">
+            <inertial pos="-0.0980701 0.00324376 0.0182831" quat="0.510729 0.517006 0.487966 0.483477" mass="0.104" diaginertia="0.000160262 0.000145304 2.83125e-05"/>
+            <joint name="elbow_flex" pos="0 0 0" axis="0 0 1" limited="false" range="-1.69 1.69"/>
+            <site name="lower_arm_c0" pos="-0.145098 -0.015 -0.012"/>
+            <site name="lower_arm_c1" pos="-0.145098 -0.015 0.0524"/>
+            <site name="lower_arm_c2" pos="-0.145098 0.0219 -0.012"/>
+            <site name="lower_arm_c3" pos="-0.145098 0.0219 0.0524"/>
+            <site name="lower_arm_c4" pos="0.012 -0.015 -0.012"/>
+            <site name="lower_arm_c5" pos="0.012 -0.015 0.0524"/>
+            <site name="lower_arm_c6" pos="0.012 0.0219 -0.012"/>
+            <site name="lower_arm_c7" pos="0.012 0.0219 0.0524"/>
+            <body name="wrist" pos="-0.1349 0.0052 0" quat="0.707107 0 0 -0.707107">
+              <inertial pos="-0.000103312 -0.0386143 0.0281156" quat="0.967143 0.254226 0.00162226 -0.000146307" mass="0.079" diaginertia="3.68265e-05 2.74474e-05 1.89434e-05"/>
+              <joint name="wrist_flex" pos="0 0 0" axis="0 0 1" limited="false" range="-1.65806 1.65806"/>
+              <site name="wrist_c0" pos="-0.02 -0.0658284 -0.009"/>
+              <site name="wrist_c1" pos="-0.02 -0.0658284 0.0533"/>
+              <site name="wrist_c2" pos="-0.02 0.0119977 -0.009"/>
+              <site name="wrist_c3" pos="-0.02 0.0119977 0.0533"/>
+              <site name="wrist_c4" pos="0.0156597 -0.0658284 -0.009"/>
+              <site name="wrist_c5" pos="0.0156597 -0.0658284 0.0533"/>
+              <site name="wrist_c6" pos="0.0156597 0.0119977 -0.009"/>
+              <site name="wrist_c7" pos="0.0156597 0.0119977 0.0533"/>
+              <body name="gripper" pos="0 -0.0611 0.0181" quat="0.0172091 -0.0172091 0.706897 0.706897">
+                <inertial pos="0.000213627 0.000245138 -0.025187" quat="0.600717 0.355993 0.35863 0.61951" mass="0.087" diaginertia="4.33735e-05 3.77229e-05 2.42839e-05"/>
+                <joint name="wrist_roll" pos="0 0 0" axis="0 0 1" limited="false" range="-2.74385 2.84121"/>
+                <site name="gripper_c0" pos="-0.0352 -0.028 -0.104425"/>
+                <site name="gripper_c1" pos="-0.0352 -0.028 0.000999415"/>
+                <site name="gripper_c2" pos="-0.0352 0.024 -0.104425"/>
+                <site name="gripper_c3" pos="-0.0352 0.024 0.000999415"/>
+                <site name="gripper_c4" pos="0.030398 -0.028 -0.104425"/>
+                <site name="gripper_c5" pos="0.030398 -0.028 0.000999415"/>
+                <site name="gripper_c6" pos="0.030398 0.024 -0.104425"/>
+                <site name="gripper_c7" pos="0.030398 0.024 0.000999415"/>
+                <body name="moving_jaw_so101_v1" pos="0.0202 0.0188 -0.0234" quat="0.707107 0.707107 -1.85362e-08 1.85362e-08">
+                  <inertial pos="-0.00157495 -0.0300244 0.0192755" quat="0.695265 0.717965 -0.0245618 -0.0230097" mass="0.012" diaginertia="6.63582e-06 5.29092e-06 1.86523e-06"/>
+                  <joint name="gripper" pos="0 0 0" axis="0 0 1" limited="false" range="-0.174533 1.74533"/>
+                  <site name="moving_jaw_so101_v1_c0" pos="-0.0123 -0.081999 -0.0051"/>
+                  <site name="moving_jaw_so101_v1_c1" pos="-0.0123 -0.081999 0.0429"/>
+                  <site name="moving_jaw_so101_v1_c2" pos="-0.0123 0.00999466 -0.0051"/>
+                  <site name="moving_jaw_so101_v1_c3" pos="-0.0123 0.00999466 0.0429"/>
+                  <site name="moving_jaw_so101_v1_c4" pos="0.00999798 -0.081999 -0.0051"/>
+                  <site name="moving_jaw_so101_v1_c5" pos="0.00999798 -0.081999 0.0429"/>
+                  <site name="moving_jaw_so101_v1_c6" pos="0.00999798 0.00999466 -0.0051"/>
+                  <site name="moving_jaw_so101_v1_c7" pos="0.00999798 0.00999466 0.0429"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

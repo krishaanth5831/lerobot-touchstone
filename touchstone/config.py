@@ -83,6 +83,25 @@ STAGE_TORQUE_LIMIT = {
     "wrist_roll": 80,
     "gripper": 80,
 }
+# ------------------------------------------------------------------ blocked or the real stop?
+# A joint's own hard stop does not care where the other joints are; an obstruction (the table,
+# the arm's own links) does. So a stall far from where the stop should be is tested: back off,
+# move ANOTHER joint, touch again. Same tick under poses that move every pair of links that could
+# be touching = the real stop. Further = it was blocked, keep going. Shorter = that pose is worse,
+# undo it. Which joint, and which way, comes from the kinematics model (link positions, reliable),
+# not its collision shapes (10-30 mm off near the fold).
+PERTURB_TICKS = 230           # ~20 deg per test move
+PERTURB_MARGIN_TICKS = 30     # a test move stays this far inside the moving joint's calibrated range
+PERTURB_BACKOFF_TICKS = 80    # the homed joint backs off this far before another joint moves
+MAX_PERTURBATIONS = 6         # per end
+CONFIRM_TICKS = 12            # same stop under two poses: compliance + gravity preload shift a few ticks
+PAIR_MOVED_MM = 12.0          # a pair of links counts as moved apart/together by a test move
+WEAK_FACTOR, WEAK_FRICTION = 1.5, 40   # too weak at a stall if 1.5 x gravity + 40 > the torque limit
+# Design travel per joint (MJCF ranges, deg). Measured spans may exceed them (the CAD is not this
+# arm); clearly SHORT of them means one end was probably an obstruction.
+DESIGN_SPAN_DEG = {"shoulder_pan": 220, "shoulder_lift": 200, "elbow_flex": 194, "wrist_flex": 190,
+                   "wrist_roll": 320, "gripper": 110}
+SPAN_SHORT_DEG = 10
 STAGE_STEP_TICKS = 2          # 100 ticks/s ~ 9 deg/s while staging
 
 # ------------------------------------------------------------------ motion
