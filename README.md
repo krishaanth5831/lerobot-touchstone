@@ -18,7 +18,8 @@ reference, found by touching them.
 `lerobot-calibrate` asks you to move every joint by hand through its full range. Where you
 stop is where the range ends, so the result depends on how far you pushed that day. touchstone
 finds the ends with the motors themselves, at a low torque limit, touching each stop twice and
-checking that the touches agree. The same command gives the same answer every time, and
+checking that the touches agree. On the author's arm, repeated runs found the gripper,
+wrist_roll and elbow_flex stops to within a few ticks (shoulder_pan not yet, see below), and
 `touchstone diff` shows how far your hand calibration was off.
 
 What it is **not**, yet:
@@ -41,7 +42,7 @@ What it is **not**, yet:
     [How it works](#how-it-works)). Without it, touchstone says so at the start and reports far
     stalls as `suspect`. Whether mujoco imports decides which behaviour you get on the real arm,
     so check it (`python -c "import mujoco"`). Pass `--no-tests` to switch the test moves off
-    on purpose.
+    on purpose. Tests pass with mujoco 3.8.1 and 4.0.1.
   - **matplotlib**: for `touchstone plot`.
 
 The simulator needs neither an arm nor lerobot.
@@ -107,11 +108,16 @@ The simulated run also prints the simulator's true stops, so you can see how clo
 
 ## On the real follower: the first session
 
+> **Use `--no-tests` on the real arm for now.** Every completed hardware run so far was made
+> without the blocked-or-real-stop test moves. With mujoco installed and no `--no-tests`, a far
+> stall makes touchstone move *other* joints by itself, a path that has run on the arm only
+> once (and aborted). The commands below include the flag.
+
 ```bash
 touchstone probe                              # 1. READ-ONLY: voltage, temps, limits, json vs motor
-touchstone home --joint gripper --end none    # 2. rehearsal: torque on at the homing limit, hold, restore. NO motion
+touchstone home --joint gripper --end none --no-tests   # 2. rehearsal: torque on at the homing limit, hold, restore. NO motion
 touchstone probe                              # 3. must show no "motor differs from json"
-touchstone home --joint gripper               # 4. the real thing (asks you to type 'gripper' first)
+touchstone home --joint gripper --no-tests    # 4. the real thing (asks you to type 'gripper' first)
 touchstone plot runs/<run>
 ```
 
@@ -126,6 +132,8 @@ Before you run anything:
 
 - Rest the arm folded with **torque off on every joint** (it refuses otherwise).
 - Clear the area, nothing between the jaws, and keep a hand near the power switch.
+- Without `--no-tests` (or with staging poses taught), joints other than the one being homed
+  may move on their own.
 - Ctrl-C stops it at any time and still restores everything.
 
 Run the gripper 3 times and compare the stops: that is your repeatability number. Then try the
@@ -141,8 +149,8 @@ ones). `touchstone home --help` lists them all.
 ## The whole arm in one command
 
 ```bash
-touchstone home-all                                   # gripper, wrist_roll, shoulder_pan, wrist_flex, elbow_flex, shoulder_lift
-touchstone home-all --only elbow_flex shoulder_lift   # just these, still in the safe order
+touchstone home-all --no-tests                                   # gripper, wrist_roll, shoulder_pan, wrist_flex, elbow_flex, shoulder_lift
+touchstone home-all --no-tests --only elbow_flex shoulder_lift   # just these, still in the safe order
 ```
 
 It waits before each joint (ENTER = go, s = skip, q = stop). A joint that is too weak at its
@@ -162,7 +170,7 @@ Everything below ran on **one** SO-101 follower (12 V, stock jaws) on 2026-11-03
 | `home --end none` rehearsal | yes: gripper, wrist_roll, shoulder_pan, wrist_flex, elbow_flex |
 | `home` (one joint) and `home-all` (three whole-arm runs, two of them complete) | yes, but **without** the test moves: these runs used the code from before they were added (commits 9e63a90 and f91ed02), so far stalls were reported as `suspect` |
 | Blocked-or-real-stop test moves (on by default when mujoco imports) | **once**: shoulder_lift, 2026-11-04. The first test move (elbow_flex) was itself blocked, so the run aborted safely and restored every register. A full test sequence has never completed on the arm |
-| Cleanup after a fault | the abort-and-restore path ran on several aborts. Once the serial bus dropped out during a Ctrl-C, and the restore errors were reported as designed (fix: power-cycle, then `sync`) |
+| Cleanup after a fault | the abort-and-restore path ran on several aborts. Once, during a Ctrl-C, no motor answered any more (no status packets), and the restore errors were reported as designed (fix: power-cycle, then `sync`) |
 | `sync` | written during the first session for a wrist_roll motor whose EEPROM no longer matched the JSON. It leaves no run folder, so the logs don't record its use |
 | Staging poses (`teach`, staged `home`) | **never** run on the arm |
 | Applying a candidate to the lerobot calibration | **never** done |
@@ -174,10 +182,14 @@ Stops found on the real arm (raw ticks, `ok` unless noted; torque limit in /1000
 |---|---|---|---|
 | gripper | 2014–2017 (4 runs) | 3470 (4 runs) | at 80. At 150 it read 2002 / 3491: the stock jaws flex, so home every joint at the same limit before you compare |
 | wrist_roll | 142–146 (3 runs) | 3952–3955 (3 runs) | at 80. One run from the folded pose stalled at 2699 (`suspect`: the arm was in its own way) |
-| shoulder_pan | 676, 754, and 2× `unrepeatable` | 3255, 3316, 3322 | at 80. Each run's touches agreed, but runs disagree by up to 78 ticks. **Not trustworthy yet**, cause unknown |
+| shoulder_pan | 676, 754, and 2× `unrepeatable` | 3255, 3316, 3322 | at 80. The runs that passed disagree by up to 78 ticks. **Not trustworthy yet**, cause unknown |
 | wrist_flex | 915–921 (3 runs) | 2936–2942 in the last 4 runs (`ok` at 2942, just inside the 60-tick tolerance; `suspect` at 2936–2937). Earlier stalls at 2876 / 2882 | the max end sits ~60 ticks short of the hand calibration (3001): a real stop or the jaw touching the arm, unresolved |
-| elbow_flex | 915–927 | 3136–3141 | below 230 the folded elbow often could not unfold (`suspect` near its start; stuck at 80). 230, the default, gave `ok` at both ends twice |
+| elbow_flex | 915–927 | 3136–3141 | on 11-03 the folded elbow often could not unfold (`suspect` near its start, see the note below). 230, the default since the fix, gave `ok` at both ends twice |
 | shoulder_lift | `no_stop` (to 725), twice | `suspect` at 992 and 1088 | with the arm folded, it blocks itself when the shoulder lifts. **Open problem** |
+
+The 2026-11-03 runs came before a fix (commit 0485a73): a fixed 30-tick goal lead capped every
+push near 140/1000 whatever the torque limit said, so the limits above ~140 on that day (gripper
+at 150, elbow at 150–300) are nominal. The 2026-11-04 runs have the fix.
 
 ## How it works
 
