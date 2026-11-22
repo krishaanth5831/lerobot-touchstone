@@ -59,5 +59,5 @@ def sync_joint(bus, cal: dict, joint: str, confirm: Callable[[str], bool] = lamb
     on_event(f"{joint}: written and read back OK. Present_Position {pos_before} -> {pos_after} "
              f"(same pose, new zero); json range {want['range_min']}..{want['range_max']}")
     if not want["range_min"] <= pos_after <= want["range_max"]:
-        on_event(f"  !! {joint} now reads {pos_after}, OUTSIDE its range. Do not run anything; tell Claude.")
+        on_event(f"  !! {joint} now reads {pos_after}, OUTSIDE its range. Do not run anything until the calibration is checked.")
     return out

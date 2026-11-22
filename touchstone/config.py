@@ -109,7 +109,7 @@ CYCLE_HZ = 50                 # one read-decide-write cycle every 20 ms
 STEP_FAST_TICKS = 3           # first touch:  150 ticks/s ~ 13 deg/s
 STEP_SLOW_TICKS = 1           # second touch:  50 ticks/s ~  4 deg/s (the measurement)
 STEP_MOVE_TICKS = 4           # backing off and returning to the start pose
-LEAD_MAX_TICKS = 30           # the old fixed cap; now lead_for() below sizes it per torque limit
+LEAD_MAX_TICKS = 30           # the old fixed cap; now only the start value, preflight sizes it with lead_for()
 LOAD_PER_TICK_P16 = 4.5       # push per tick of error at P=16, real arm (140/30 elbow, 40/7 base), low side
 FULL_PUSH_LOAD_FRAC = 0.85    # Present_Load at this share of the torque limit = pushing at the cap
 LEAD_CEILING_TICKS = 100      # never more than this, whatever the limit (~450/1000 at P=16)
@@ -162,7 +162,7 @@ VOLTAGE_MAX_V = 13.5
 TEMP_REFUSE_C = 45            # won't start above this
 TEMP_ABORT_C = 55             # stops mid-run above this (STS3215 cuts out at 70)
 JUMP_ABORT_TICKS = 150        # one cycle never moves more than ~10 ticks; more = encoder wrap / glitch
-START_MARGIN_TICKS = 30
+START_MARGIN_TICKS = 30       # the homed joint must start within its calibrated range +- this (or widen - 10)
 # Gravity stronger than the homing torque limit makes a joint sag instead of push. Before any
 # motion the joint must SETTLE within HOLD_CHECK_S at the homing limit: a P servo always gives
 # a little under load (~0.3 N.m -> ~11 ticks at P=16), but it must stop within HOLD_SAG_MAX
@@ -175,7 +175,7 @@ SAG_TICKS = 10
 # low torque limit can brake. A held joint never runs more than ~torque_limit/9 ticks past its
 # goal (P=16), so further than this ahead of the goal = runaway: abort, and the cleanup puts
 # the full Torque_Limit back to catch it.
-OVERRUN_TICKS = 40       # the joint must start within the calibrated range +- this
+OVERRUN_TICKS = 40
 TEMP_VOLT_EVERY = 10          # read temperature and voltage every N cycles (5 Hz)
 GLITCH_SAMPLES = 3            # temperature/voltage must be out of range this many reads in a row
 APPROACH_TIMEOUT_EXTRA_S = 5.0

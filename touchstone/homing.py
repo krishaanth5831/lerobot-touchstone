@@ -7,13 +7,21 @@ One joint per run, both ends (or one). For each end:
     verdict  ok           both touches agree and the stop is near the calibrated range end
              suspect      it stalled somewhere else (table, own body, gravity winning)
              no_stop      it reached the search limit without stalling
-             unrepeatable the two touches disagree
+             unrepeatable the two touches disagree (a third touch breaks a tie first)
+             weak         too weak, not blocked: gravity alone explains the stall at this torque
+                          limit (or the test moves that might clear it would make it too heavy)
+             blocked      a far stall that test moves of other joints could neither confirm nor clear
+
+With a kinematics model (touchstone/kinematics.py, needs mujoco), a stall far from the
+calibrated end is not trusted or rejected outright: the joint backs off, ANOTHER joint makes a
+small test move, and it touches again. The same tick under poses that move every link pair that
+could be touching = the real stop; further = it was blocked. Every test move is retraced.
 
 then the joint returns to where it started and every register goes back to how it was.
 
 A stall: the goal keeps advancing, the joint has not moved for STALL_WINDOW_S, and the goal
-is at least STALL_MIN_LEAD_TICKS ahead. The goal is never more than LEAD_MAX_TICKS ahead,
-and Torque_Limit is the joint's low homing limit, so the push is capped twice (config.py).
+is at least STALL_MIN_LEAD_TICKS ahead. The goal is never more than config.lead_for(limit)
+ticks ahead, and Torque_Limit is the joint's low homing limit, so the push is capped twice (config.py).
 
 Nothing here touches homing_offset: the candidate only changes range_min/range_max.
 """
@@ -22,11 +30,11 @@ from __future__ import annotations
 import signal
 import statistics
 import traceback
-
-import numpy as np
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Callable
+
+import numpy as np
 
 from . import config
 

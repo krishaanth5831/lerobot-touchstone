@@ -6,7 +6,7 @@ import pytest
 
 from touchstone import config, report
 from touchstone.homing import Homer, Refused, candidate_calibration
-from touchstone.sim import NM_PER_LOAD, SimBus
+from touchstone.sim import SimBus
 
 CAL = {
     "shoulder_pan": {"id": 1, "drive_mode": 0, "homing_offset": -1462, "range_min": 792, "range_max": 3288},

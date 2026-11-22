@@ -237,7 +237,7 @@ def cmd_teach(args) -> int:
         return 2
     print("\n".join(f"  {m:<14}{pose[m]:>6}" + ("   (the joint being homed: ignored)" if m == args.joint else "")
                     for m in config.JOINTS))
-    data[args.joint] = {"pose": pose, "taught": __import__("time").strftime("%Y-%m-%d %H:%M")}
+    data[args.joint] = {"pose": pose, "taught": time.strftime("%Y-%m-%d %H:%M")}
     config.STAGING_JSON.write_text(json.dumps(data, indent=2) + "\n")
     print(f"saved to {config.STAGING_JSON}. Next: touchstone home --joint {args.joint} --end none"
           " (stages, holds, unstages; the homed joint does not move)")

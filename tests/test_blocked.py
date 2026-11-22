@@ -1,7 +1,5 @@
 """Blocked or the real stop? A joint's own stop ignores the other joints; an obstruction doesn't.
 The sim's coupled obstacles depend on another joint's pose, like the folded arm hitting itself."""
-import pytest
-
 from touchstone import config
 from touchstone.homing import Homer
 from touchstone.kinematics import Kinematics
