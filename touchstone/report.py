@@ -65,6 +65,12 @@ def summary(result: JointResult, rows: list[dict] | None = None) -> str:
         touches = ", ".join(f"{t.kind}@{t.position} (peak load {t.peak_load})" for t in e.touches)
         lines.append(f"  {e.end:>3}: {e.verdict:<12} calibrated {e.expected:>5}  found {e.stop!s:>5}  "
                      f"[{touches}]  {e.note}")
+    for e in result.ends:
+        for t in e.tests:
+            lines.append(f"       test: moved {t['joint']} to {t['to']} -> stalled at {t.get('stall_after')}: "
+                         f"{t.get('outcome', 'not finished')}")
+    if result.span_note:
+        lines.append(f"  {result.span_note}")
     if result.aborted:
         lines.append(f"  ABORTED: {result.aborted.splitlines()[0]}")
     if result.restore_errors:

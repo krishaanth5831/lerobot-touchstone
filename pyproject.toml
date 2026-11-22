@@ -7,7 +7,7 @@ name = "lerobot-touchstone"
 version = "0.1.0"
 description = "Automatic hard-stop homing for the SO-101 follower: the arm finds its own range"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["numpy"]
 
 [project.optional-dependencies]
 arm = ["lerobot[feetech]"]

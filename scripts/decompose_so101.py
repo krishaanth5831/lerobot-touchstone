@@ -5,13 +5,14 @@
 MuJoCo collides each mesh as its convex HULL, so a concave link (the U-shaped upper arm, the
 jaw) "collides" where the real part has a gap, and the folded rest pose looks like a crash.
 CoACD splits each mesh into convex parts that follow the real shape; MuJoCo then collides part
-against part. Run once, offline; the output is committed, so homing needs only mujoco.
+against part. Run once, offline. The output is git-ignored (about 17 MB) and only
+touchstone/collide.py (experimental, not used while homing) reads it.
 
 Input: TheRobotStudio/SO-ARM100 Simulation/SO101 (Apache-2.0), as fetched for B.L.U.S.H.
 Output: touchstone/model/so101/ (collision.xml + parts/*.stl + NOTICE.md)
 """
-import pathlib, sys, shutil
-import numpy as np, mujoco, trimesh, coacd
+import pathlib, sys
+import mujoco, trimesh, coacd
 
 SRC = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else \
     pathlib.Path.home() / "Desktop/personal_projects/github/vinea-so101/B.L.U.S.H/sim/assets/so101/so101_new_calib.xml"

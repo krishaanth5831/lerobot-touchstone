@@ -129,6 +129,7 @@ class SimBus:
         self.writes: list[tuple[float, str, str, int]] = []
         self.faults: list[tuple[float, str, str, int]] = []      # (t, motor, kind, value)
         self.interrupt_at: float | None = None
+        self.coupled: list = []         # callables(bus) that set joints[...].obstacle from the pose
 
     # ------------------------------------------------------------------ bus interface
     def read(self, reg: str, motor: str) -> int:
@@ -171,6 +172,8 @@ class SimBus:
     def sleep(self, dt: float) -> None:
         end = self.t + max(dt, 0.0)
         while self.t < end:
+            for f in self.coupled:      # obstacles that depend on where the OTHER joints are
+                f(self)
             for J in self.joints.values():
                 J.step(PHYSICS_DT)
             self.t += PHYSICS_DT
